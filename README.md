@@ -9,9 +9,13 @@ Go 服务使用 MySQL 作为权威存储，Redis 仅缓存公共 DTO。HTTP 默�
 ## 命令
 
 首次在项目根目录运行：先确保前端 `web/package.json` 与 `web/package-lock.json`
-存在，再执行 `make build → make setup → make migrate → make dev`。
+存在，再执行 `make build → make setup → make migrate → make run`。
 `make build` 生成真实 `web/dist`；Go embedded 使 migrate/dev/test 都依赖该产物。
 setup 本身可先准备存储，不依赖 dist；重复 setup 不覆盖配置或重建数据库。
+
+`make run` 是「改完代码一键跑」入口：每次先 `npm ci` + 前端构建生成**最新**
+`web/dist`，再以前台 dev 方式启动服务，避免服务嵌入旧 dist。
+`make dev` 保持快速启动语义，**要求 `web/dist` 已存在**，不重新编译前端。
 
 ```sh
 make setup         # brew services + 独立数据库/用户 + 受保护本地配置
@@ -21,7 +25,8 @@ make stop          # 只停止项目隔离依赖，保留数据，不停止 brew
 make start         # 重启项目隔离依赖
 make build         # npm ci、真实前端构建、Go embedded 二进制
 make migrate       # 显式 Go 数据库迁移（依赖真实前端 dist）
-make dev           # 安全加载配置后启动 Go 服务
+make run           # 先编译前端生成最新 dist，再启动 Go 服务（一键，前台）
+make dev           # 安全加载配置后启动 Go 服务（快速启动，要求 dist 已存在）
 make dev-live      # 显式开启本次后端付费开关；可能产生费用，详见下方
 make test-scripts  # 无数据库的脚本安全测试
 make test          # Go 测试（依赖真实 dist）

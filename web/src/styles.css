@@ -804,6 +804,9 @@ select {
   background: conic-gradient(#4c8fc0 0 25%, #f2eee2 0 50%, #4c8fc0 0 75%, #f2eee2 0);
   border: 1px solid #2f5f80;
 }
+.seat .bet .bet-sep {
+  color: var(--faint);
+}
 .seat .hole {
   position: absolute;
   top: 4px;
@@ -1040,6 +1043,110 @@ select {
   font-size: 11.5px;
   font-family: var(--font-num);
   color: var(--muted);
+}
+
+/* 快捷注：紧贴加注输入框，自成一行；点击把比例目标值填入输入框。 */
+.quick-bets {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+.quick-bet {
+  appearance: none;
+  cursor: pointer;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-width: 60px;
+  padding: 5px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--ink);
+  line-height: 1.15;
+  transition: border-color 0.16s, background 0.16s, transform 0.12s, box-shadow 0.16s;
+}
+.quick-bet:hover:not(:disabled) {
+  border-color: var(--gold-dim);
+  background: rgba(201, 164, 76, 0.1);
+  transform: translateY(-1px);
+}
+.quick-bet:active:not(:disabled) {
+  transform: translateY(0);
+}
+.quick-bet:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+.quick-bet:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+/* 当前输入框数值命中的比例，高亮反馈 */
+.quick-bet[aria-pressed="true"] {
+  border-color: var(--gold);
+  background: rgba(201, 164, 76, 0.18);
+  box-shadow: 0 0 0 1px rgba(201, 164, 76, 0.35);
+}
+.quick-bet .qb-ratio {
+  font-family: var(--font-num);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gold-soft);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.quick-bet .qb-to {
+  font-family: var(--font-num);
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.quick-bet.is-allin {
+  border-color: rgba(224, 106, 92, 0.4);
+}
+.quick-bet.is-allin .qb-ratio {
+  color: #f2b7ae;
+}
+.quick-bet.is-allin:hover:not(:disabled) {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+.quick-bet.is-allin[aria-pressed="true"] {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  box-shadow: 0 0 0 1px rgba(224, 106, 92, 0.35);
+}
+
+/* 按钮上的快捷键提示（kbd） */
+.keyhint {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 7px;
+  padding: 0 4px;
+  border-radius: 5px;
+  border: 1px solid var(--panel-line);
+  background: rgba(0, 0, 0, 0.32);
+  font-family: var(--font-num);
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--muted);
+  vertical-align: middle;
+}
+.btn-primary .keyhint {
+  border-color: rgba(0, 0, 0, 0.28);
+  background: rgba(255, 255, 255, 0.24);
+  color: #3a2c0c;
+}
+.btn-danger .keyhint {
+  border-color: rgba(224, 106, 92, 0.35);
+  color: var(--danger);
 }
 .btn-allin {
   border-color: rgba(224, 106, 92, 0.5);
@@ -1613,6 +1720,13 @@ select {
   .raise-control .input {
     flex: 1 1 120px;
     width: auto;
+  }
+  .quick-bet {
+    min-width: 54px;
+    padding: 5px 9px;
+  }
+  .quick-bet .qb-ratio {
+    font-size: 12px;
   }
   .container {
     padding-bottom: 24px;

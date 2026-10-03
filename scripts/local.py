@@ -531,6 +531,16 @@ def go_task(action):
     return p.returncode
 
 
+def run():
+    """一键入口：先编译前端（npm ci + build 生成最新 web/dist），再前台启动服务。
+
+    复用 frontend() 与 dev 的启动逻辑（go_task("dev")）：env 仍经 action_env 走
+    service_env 的绝对 POKER_CONFIG_FILE 注入与凭据加载，前端失败即中止、不启动服务。
+    """
+    frontend()
+    return go_task("dev")
+
+
 def main():
     require(len(sys.argv) == 2, "USAGE_LOCAL_ACTION_REQUIRED")
     action = sys.argv[1]
@@ -540,6 +550,8 @@ def main():
         doctor()
     elif action == "frontend":
         frontend()
+    elif action == "run":
+        return run()
     elif action == "diagnose":
         diagnose()
     elif action in {"start", "stop", "status"}:

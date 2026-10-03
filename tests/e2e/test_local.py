@@ -364,6 +364,30 @@ class LocalSafety(unittest.TestCase):
         self.assertFalse(local._go_contract_check("ok  \ttexas-holdem/internal/conf\t0.1s"))
         self.assertTrue(local._go_contract_check("=== RUN   TestX\n--- PASS: TestX (0.00s)"))
 
+    # --- make run：一键先编译前端（生成最新 dist）再前台 dev 启动 ---
+
+    def test_run_compiles_frontend_before_starting_dev(self):
+        calls = []
+        with patch.object(local, "frontend", side_effect=lambda: calls.append("frontend")), \
+                patch.object(local, "go_task", side_effect=lambda action: calls.append(action) or 0):
+            result = local.run()
+        self.assertEqual(calls, ["frontend", "dev"])
+        self.assertEqual(result, 0)
+
+    def test_run_frontend_failure_stops_before_service(self):
+        with patch.object(local, "frontend",
+                          side_effect=local.SafeError("FRONTEND_STAGE_FAILED_FRONTEND_BUILD")), \
+                patch.object(local, "go_task") as go:
+            with self.assertRaises(local.SafeError):
+                local.run()
+        go.assert_not_called()
+
+    def test_main_run_action_dispatches_to_run(self):
+        with patch.object(local.sys, "argv", ["local.py", "run"]), \
+                patch.object(local, "run", return_value=7) as run:
+            self.assertEqual(local.main(), 7)
+        run.assert_called_once_with()
+
     # --- 配置 CLI 契约（端口/优先级/env 安全）：冻结 Go CLI 消费侧 RED 测试 ---
 
     def config_payload(self, host="127.0.0.1", port=8083, frontend=5173, extra=None):

@@ -89,9 +89,14 @@ export function Seat({
       <div className="seat-model" title={isHuman ? undefined : seat.model_ref}>
         {isHuman ? '真人玩家' : model ? model.label : seat.model_ref || '未绑定模型'}
       </div>
-      <div className="seat-stack">
+      {/* 醒目数字始终是「剩余筹码」（手中取 hand.players[].stack 实时余额，赛后取 seat.stack 结算余额）。 */}
+      <div
+        className="seat-stack"
+        data-live={live ? 'true' : 'false'}
+        title={live ? '剩余筹码 = 初始筹码 − 累计投入' : '最近结算筹码'}
+      >
         {chips(stack)}
-        <span className="unit">筹码</span>
+        <span className="unit">剩余</span>
       </div>
 
       {status !== 'active' && (
@@ -102,10 +107,16 @@ export function Seat({
         </div>
       )}
 
-      {live && player && player.street_bet > 0 && (
-        <div className="bet">
+      {/* 手中同时标注「本轮下注」与「本手累计投入」：街切换会让本轮归零，累计不变，
+          两者相加才是从初始筹码里被扣掉的部分，避免只看剩余产生「筹码没少」的错觉。 */}
+      {live && player && (player.street_bet > 0 || player.committed > 0) && (
+        <div className="bet" title="本轮下注 / 本手累计投入">
           <span className="mini-chip" />
-          本轮 {chips(player.street_bet)}
+          <span>
+            本轮 {chips(player.street_bet)}
+            <span className="bet-sep"> · </span>
+            累计 {chips(player.committed)}
+          </span>
         </div>
       )}
     </div>

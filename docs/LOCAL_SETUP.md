@@ -67,11 +67,17 @@ Go embedded 编译需要真实 `web/dist/index.html`，迁移不能在 dist 缺�
 make build       # npm ci + 真实前端构建 + Go embedded 二进制；生成 dist
 make setup       # 独立存储准备；已有配置不覆盖，重复调用保持幂等
 make migrate     # 显式 Go 迁移
-make dev         # 前台 HTTP：http://127.0.0.1:8081/
+make run         # 先编译前端生成最新 dist，再前台 HTTP：http://127.0.0.1:8081/
 ```
 
-`make dev` 使用受保护配置，不需要 source/export DSN。Ctrl-C 停止自己的 Go 进程组。
-setup 可在前端未完成时先准备存储；它不要求 dist，但 migrate/dev/test 必须先 build。
+`make run` 与 `make dev` 的差别：`make run` 每次都先 `npm ci` + 前端构建，确保 Go
+embedded 的是**最新** `web/dist`（适合「改完前端一键跑」）；`make dev` 不重新编译
+前端，**要求 dist 已存在**，适合已构建后的快速重启。两者的服务启动、配置加载与
+端口行为一致。当前不是 Git 仓库，`make run` 只做本地构建与启动，不 commit/push。
+
+`make run` / `make dev` 使用受保护配置，不需要 source/export DSN。Ctrl-C 停止自己的
+Go 进程组。setup 可在前端未完成时先准备存储；它不要求 dist，但 migrate/dev/run/test
+必须先有 dist（`make run` 会自行生成）。
 重复 setup 不重新 initialize、不改已有库/用户、不覆盖 `.env.local`。
 `make probe-dev` 临时启动开发模式二进制，只读 health/models，输出计数后停止自己的
 HTTP 进程；不打印模型目录内容、模型名称、凭据或 DSN。
