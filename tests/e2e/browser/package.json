@@ -1,0 +1,14 @@
+{
+  "name": "texas-holdem-browser-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "德州扑克观战台真实浏览器验收（Playwright + Chromium），由 run_browser.py 安全启动真实 Go 服务",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.4"
+  }
+}

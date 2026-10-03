@@ -1,0 +1,42 @@
+# 前端依赖与构建产物；嵌入策略由服务 lane 后续确定
+node_modules/
+/web/dist/
+
+# 日志
+*.log
+logs/
+
+# 本地环境文件（保留可提交的无凭据模板）
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# 配置：仅忽略同目录本地覆盖；base 与示例保留可提交
+/config/config.local.yaml
+
+# 本地凭据与私钥
+credentials/
+secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+.credentials
+.credentials.*
+
+# 临时输出与本机杂项；不忽略测试或文档
+/tmp/
+/.local/
+/temp/
+/tool-output/
+*.tmp
+*.out
+.DS_Store
+
+# IDE
+.idea/
+
+# opencode 配置
+.opencode/

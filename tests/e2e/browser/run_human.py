@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""真人真实联调：安全启动同源 Go/嵌入 Web；只清理本轮进程，不停止 Homebrew。"""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[3]
+BROWSER = Path(__file__).resolve().parent
+REPORT = ROOT / 'docs/HUMAN_PLAYER_E2E.md'
+spec = importlib.util.spec_from_file_location('local', ROOT / 'scripts/local.py')
+assert spec and spec.loader
+local = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(local)
+HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+BASE = 'http://127.0.0.1:8081'
+
+
+def get(path):
+    try:
+        response = HTTP.open(BASE + path, timeout=3)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        return response.status, json.load(response)
+
+
+def stage(log, argv, cwd, env, timeout=600):
+    command = shlex.join(argv)
+    print('$ ' + command, flush=True)
+    result = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+    # 凭据只在连接进程内；保留完整测试输出，仅作凭据脱敏。
+    output = local.sanitize_output(result.stdout + result.stderr)
+    output = re.sub(r'(?i)(poker_player=)[^;\s]+', r'\1[凭据已脱敏]', output)
+    log.write('\n### 命令\n\n```sh\n' + command + '\n```\n\n工作目录：`' + str(cwd) +
+              '`\n\n```text\n' + output + ('' if output.endswith('\n') else '\n') +
+              '```\n\n退出码：' + str(result.returncode) + '\n')
+    log.flush()
+    print(output, end='' if output.endswith('\n') else '\n', flush=True)
+    print('exit=' + str(result.returncode), flush=True)
+    return result
+
+
+def stop(process):
+    if process and process.poll() is None:
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            raise local.SafeError('OWN_SERVER_STOP_TIMEOUT')
+
+
+def main():
+    process = None
+    browser_result = None
+    failure = None
+    clean = local.child_env()
+    # 追加每轮原始证据，重跑不得覆盖失败上下文。
+    with REPORT.open('a', encoding='utf-8') as log:
+        log.write('# 真人上桌真实联调证据\n\n'
+                  '入口：`python3 tests/e2e/browser/run_human.py`。时间：' + time.strftime('%Y-%m-%d %H:%M:%S %z') + '\n\n'
+                  '真实 Chromium → 同源 Go 嵌入 Web → Homebrew MySQL 3306 / Redis 6379。'
+                  '无 fixture/route mock；mock 模型目录、allow_paid_models=false、真人超时 5s。\n\n'
+                  '不读取 .env.local，不输出 config.local.yaml 的内容或凭据；'
+                  '存储连接只由 local.py 连接助手/Go 进程在本地加载。'
+                  '不调用浏览器 Cookie/storageState API，不提取 Cookie 凭据值；'
+                  'Set-Cookie 只检查名称及 HttpOnly/Strict/Path 属性布尔值。禁用 trace/HAR/video。\n\n'
+                  '当前目录无 Git 元数据，未 pull、commit、push；版本新旧未核验。\n')
+        try:
+            local.require(not local.port_open(8081), 'PORT_8081_IN_USE_STOP_NO_KILL')
+            # 只在本地连接助手内消费受保护存储配置；不回传任何值或原始失败输出。
+            storage = local.storage_config()
+            local.require(storage['mysql_host'] == '127.0.0.1' and storage['mysql_port'] == 3306 and
+                          storage['redis_port'] == 6379, 'HOMEBREW_ENDPOINT_REQUIRED')
+            probe = local.mysql_query(storage, 'SELECT 1; SELECT COUNT(*) FROM games WHERE active_slot=1;')
+            local.require(probe.returncode == 0, 'MYSQL_PREFLIGHT_FAILED_REDACTED')
+            local.require(probe.stdout.split() == ['1', '0'], 'EXISTING_ACTIVE_GAME_STOP')
+            local.redis_ping(storage)
+            print('preflight: mysql=3306 available; redis=6379 available; active_games=0; 8081=free', flush=True)
+            log.write('\n预检：MySQL 3306 / Redis 6379 连接成功；active_games=0；8081 空闲。\n')
+            build = stage(log, ['npm', '--prefix', 'web', 'run', 'build'], ROOT, clean)
+            local.require(build.returncode == 0, 'FRONTEND_BUILD_FAILED')
+            with tempfile.TemporaryDirectory(prefix='.human-runtime-', dir=BROWSER) as directory:
+                temp = Path(directory)
+                binary = temp / 'server'
+                result = stage(log, ['go', 'build', '-mod=readonly', '-o', str(binary), './cmd/server'], ROOT, clean)
+                local.require(result.returncode == 0, 'GO_BUILD_FAILED')
+                env = local.service_env(e2e=True, explicit={
+                    'POKER_HTTP_HOST': '127.0.0.1', 'POKER_HTTP_PORT': '8081',
+                    'POKER_HUMAN_ACTION_TIMEOUT': '5s',
+                })
+                config = local.config_public(env=env)
+                local.require(config['http_base_url'] == BASE, 'CONFIG_BASE_URL_MISMATCH')
+                log.write('\n### 启动\n\n'
+                          '等价于 local.py dev 的 `service_env(e2e=True, explicit=...)` 环境，直接运行本轮新构建二进制。'
+                          '显式非敏感覆盖：POKER_HTTP_HOST=127.0.0.1、POKER_HTTP_PORT=8081、'
+                          'POKER_HUMAN_ACTION_TIMEOUT=5s、POKER_CATALOG_PATH=scripts/mock-catalog.json、'
+                          'POKER_ALLOW_PAID_MODELS=false；POKER_CONFIG_FILE 为主 YAML 绝对路径。'
+                          '未使用 dev-live，不读取用户 opencode 配置。\n'
+                          '服务原始日志不保存、不回传，避免凭据进入证据。\n')
+                process = subprocess.Popen([str(binary)], cwd=ROOT, env=env,
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                           start_new_session=True)
+                deadline = time.monotonic() + 40
+                state = None
+                while time.monotonic() < deadline:
+                    local.require(process.poll() is None, 'GO_SERVER_START_FAILED_LOGS_NOT_EXPOSED')
+                    try:
+                        status, state = get('/api/v1/health')
+                        if status == 200:
+                            break
+                    except (OSError, urllib.error.URLError):
+                        pass
+                    time.sleep(0.1)
+                local.require(state and state['mysql'] == state['redis'] == 'available' and
+                              state['allow_paid_models'] is False, 'HEALTH_OR_PAID_GUARD_FAILED')
+                status, models = get('/api/v1/models')
+                local.require(status == 200 and [m['ref'] for m in models['models']] == ['mock'],
+                              'MOCK_ONLY_CATALOG_REQUIRED')
+                print('health: ' + json.dumps(state) + '; models=[mock]', flush=True)
+                log.write('\n实测 health：`' + json.dumps(state) + '`；models 仅 mock。\n')
+                browser_env = {**clean, 'POKER_BASE_URL': BASE, 'HUMAN_OUTPUT_DIR': str(temp / 'artifacts'),
+                               'HUMAN_EVIDENCE_FILE': str(temp / 'evidence.json'), 'FORCE_COLOR': '0'}
+                browser_result = stage(log, ['npx', '--no-install', 'playwright', 'test',
+                                             '--config=playwright.human.config.ts'], BROWSER, browser_env, 240)
+                counts = []
+                for label in ('passed', 'failed', 'did not run'):
+                    match = re.search(r'(\d+) ' + label, browser_result.stdout)
+                    counts.append(int(match.group(1)) if match else 0)
+                summary = f'playwright: passed={counts[0]} failed={counts[1]} not_run={counts[2]} exit={browser_result.returncode}'
+                print(summary, flush=True)
+                log.write('\n```text\n' + summary + '\n```\n')
+                local.require(browser_result.returncode == 0, 'REAL_BROWSER_FAILED_STOP_IMPLEMENTATION_UNCHANGED')
+        except Exception as error:
+            failure = str(error) if isinstance(error, local.SafeError) else 'HARNESS_FAILED_REDACTED'
+            print('human-e2e: FAIL ' + failure, flush=True)
+            log.write('\n联调停止：`' + failure + '`。未修改 Go/Web 实现。\n')
+        finally:
+            stop(process)
+            released = not local.port_open(8081)
+            retained = local.port_open(3306) and local.port_open(6379)
+            line = 'cleanup: own_server_stopped=' + str(process is None or process.poll() is not None) + \
+                   '; 8081_released=' + str(released) + '; Homebrew_3306_6379_retained=' + str(retained)
+            print(line, flush=True)
+            log.write('\n```text\n' + line + '\n```\n')
+            if not released or not retained:
+                failure = failure or 'CLEANUP_OR_DEPENDENCY_CHECK_FAILED'
+        race = stage(log, ['go', 'test', '-mod=readonly', '-race', '-count=1', './...'], ROOT, clean, 1200)
+        passed_packages = len(re.findall(r'^ok\s', race.stdout, re.M))
+        failed_packages = len(re.findall(r'^FAIL\s', race.stdout, re.M))
+        line = f'go-race: passed_packages={passed_packages} failed_packages={failed_packages} exit={race.returncode}'
+        print(line, flush=True)
+        log.write('\n```text\n' + line + '\n```\n')
+        if race.returncode:
+            failure = failure or 'GO_RACE_FAILED'
+        log.write('\n## 场景与测试函数\n\n'
+                  '| 场景 | 测试函数 | 结果来源 |\n|---|---|---|\n'
+                  '| a 创建真人+AI、模型校验 | human_identity_privacy_refresh | a/b EVIDENCE + Playwright |\n'
+                  '| b Set-Cookie/HttpOnly、自动凭据 | human_identity_privacy_refresh | a/b、c/g EVIDENCE |\n'
+                  '| c 本人两张牌/合法动作、匿名403 | human_identity_privacy_refresh | c/g EVIDENCE |\n'
+                  '| d 行动面板与倒计时 | human_actions | d EVIDENCE |\n'
+                  '| e call/check/raise_to/fold、400/409 | human_actions | e/* EVIDENCE |\n'
+                  '| f 5秒服务端弃牌、结算、下一手 | human_timeout / human_running_refresh_next_hand | f、f/next-hand EVIDENCE |\n'
+                  '| g 公共无私牌、完成后揭牌 | human_identity_privacy_refresh / human_actions | c/g、g/completed EVIDENCE |\n'
+                  '| h 暂停/运行中刷新 Cookie 恢复本人 | human_identity_privacy_refresh / human_running_refresh_next_hand | h、h/running EVIDENCE |\n\n'
+                  '测试源码：`tests/e2e/browser/human/human.spec.ts`（包含完整断言）。'
+                  '结果以以上未截断原始输出为准，缺少 EVIDENCE 的场景不得视为通过。\n\n'
+                  '未验证边界：服务重启恢复、跨标签并发、Cookie 丢失/重复/伪造、非 loopback 部署、'
+                  'live/付费模型、短全押/全押跟注、Redis 缓存原文、故障注入、全 AI 旧浏览器全量回归。'
+                  '全押按钮在合法状态可用，但本轮未点击全押。'
+                  '刷新同时验证暂停冻结点与运行中等待点；超时验证单手结算与多手牌局进入下一手。\n\n'
+                  '最终状态：' + ('FAIL / 部分完成，见上文失败证据。' if failure else 'PASS / 本轮真实链路与 Go race 均通过。') + '\n')
+    return 1 if failure else 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

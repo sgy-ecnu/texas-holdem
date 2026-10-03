@@ -1,0 +1,55 @@
+# config/config.local.yaml.example
+#
+# 用法：复制为同目录的 config.local.yaml 后按需取消注释。
+#   cp config/config.local.yaml.example config/config.local.yaml
+#
+# 解析顺序（后者覆盖前者）：
+#   1) base：POKER_CONFIG_FILE 指定的文件，或默认 config/config.yaml
+#      （也可用命令行 -conf PATH 显式指定 base）
+#   2) 同目录可选覆盖：config.local.yaml（本文件复制后的名字；缺失不报错）
+#   3) 白名单环境变量（显式覆盖，仅非空值生效）
+#
+# 说明：
+#   - 本文件只做「部分覆盖」，未列出的字段沿用默认 schema。
+#     完整默认 schema 见 config/config.yaml 与 docs/CONFIGURATION.md，此处不重复。
+#   - 显式写出的 false / 0 是有效覆盖：存在即覆盖，不会被 base 的 true / 非 0 覆盖回去。
+#   - 本文件已被 gitignore，可安全写入本机真实直连地址与密码：
+#       * data.mysql.dsn      —— 完整 DSN（含密码），非空时优先于 dsn_env
+#       * data.redis.addr     —— Redis 地址，如 127.0.0.1:6379
+#       * data.redis.db       —— Redis DB，本地默认 0
+#       * data.redis.password —— 直连密码，非空时优先于 password_env
+#     只需二选一：要么在此直连，要么沿用 base 的 dsn_env / password_env 走环境变量。
+#   - base 的 config/config.yaml 进 git，禁止写入任何明文密码/DSN。
+#   - 修改配置后需要重启服务才会生效。
+#   - 本机所有服务地址（监听地址）只通过 server.http.port 变更；host 保持 loopback。
+#   - config.local.yaml 是本机私有文件，必须被 git 忽略；本 .example 文件必须提交。
+
+# 以下为最小安全部分覆盖示例，取消注释即生效：
+
+# 仅改监听端口（本机服务地址的唯一入口）
+# server:
+#   http:
+#     port: 8083
+
+# 显式 false 覆盖示例：base 若为 true，这里写 false 会生效
+# agents:
+#   allow_paid_models: false
+#   request_timeout: 20s
+#   max_output_tokens: 128
+
+# 显式 0 覆盖示例：base 若为非 0，这里写 db: 0 会生效（当前 base 已是 0）
+# data:
+#   redis:
+#     db: 0
+
+# 本机真实直连示例（本文件已 gitignore，可写真实值；不要提交到 base）
+# 密码占位符 <PASSWORD> 仅示意，请替换为本机真实值：
+# data:
+#   mysql:
+#     # 完整 DSN（含密码）；非空即优先于 base 的 dsn_env
+#     dsn: "root:<PASSWORD>@tcp(127.0.0.1:3306)/poker?parseTime=true&charset=utf8mb4"
+#   redis:
+#     addr: 127.0.0.1:6379
+#     db: 0
+#     # 直连密码；非空即优先于 base 的 password_env
+#     password: "<PASSWORD>"

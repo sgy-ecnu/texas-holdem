@@ -1,0 +1,28 @@
+# 默认服务配置。解析顺序：本文件 → 同目录 config.local.yaml → 白名单环境变量。
+# 本文件进 git：禁止写任何密码/DSN 明文，只声明环境变量名（dsn_env / password_env）。
+# 本机真实直连地址与密码写进被 gitignore 的 config.local.yaml（见 config.local.yaml.example）。
+server:
+  http:
+    host: 127.0.0.1
+    port: 8081
+    timeout: 10s
+frontend:
+  dev_port: 5173
+data:
+  mysql:
+    dsn_env: POKER_MYSQL_DSN
+  redis:
+    addr: 127.0.0.1:6379
+    db: 0
+    password_env: POKER_REDIS_PASSWORD
+gameplay:
+  human_action_timeout: 60s
+  # AI 每次动作后、推进下一个 actor 前的思考停顿，让轮转节奏对人眼可见。
+  # 显式 0/负值会被拒绝；真人座位不受影响（由 human_action_timeout 控制）。
+  ai_turn_delay: 1.5s
+agents:
+  catalog_path: auto
+  request_timeout: 15s
+  max_output_tokens: 256
+  allow_paid_models: false
+  max_live_calls: 1000
