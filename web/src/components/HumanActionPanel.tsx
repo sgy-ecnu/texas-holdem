@@ -205,8 +205,6 @@ export function HumanActionPanel({ game, controlsBusy, onBusyChange, onApply, on
 
   return (
     <section className={`action-panel${isMyTurn ? ' is-turn' : ''}`} aria-live="polite">
-      <div className="action-who">真人 · 座位 {player.seat}</div>
-
       {notice && <div className="banner info">{notice}</div>}
       {error && (
         <div className="banner error" role="alert">
@@ -216,113 +214,120 @@ export function HumanActionPanel({ game, controlsBusy, onBusyChange, onApply, on
 
       {isMyTurn && legal && (
         <div className="action-body">
-          <div className="action-buttons">
-            {legal.can_fold && (
-              <button
-                className="btn btn-danger"
-                aria-label="弃牌"
-                aria-keyshortcuts="F"
-                disabled={!canAct}
-                onClick={() => void send('fold')}
-              >
-                弃牌 <kbd className="keyhint" aria-hidden="true">F</kbd>
-              </button>
-            )}
-            {legal.can_check && (
-              <button
-                className="btn"
-                aria-label="过牌"
-                aria-keyshortcuts="K"
-                disabled={!canAct}
-                onClick={() => void send('check')}
-              >
-                过牌 <kbd className="keyhint" aria-hidden="true">K</kbd>
-              </button>
-            )}
-            {legal.can_call && (
-              <button
-                className="btn btn-primary"
-                aria-label={`跟注 ${chips(legal.call_amount)}`}
-                aria-keyshortcuts="C"
-                disabled={!canAct}
-                onClick={() => void send('call')}
-              >
-                跟注 {chips(legal.call_amount)} <kbd className="keyhint" aria-hidden="true">C</kbd>
-              </button>
-            )}
-            {/* 无加注权时，全押可能仍是唯一可提交动作（跟注即全下）；有加注权时由快捷注的「全押」承担。 */}
-            {!legal.can_raise && (
-              <button
-                className="btn btn-allin"
-                aria-label="全押"
-                disabled={!canAct || allIn === null}
-                title={allIn === null ? '当前无合法全押动作' : undefined}
-                onClick={() => {
-                  if (!allIn) return
-                  void send(allIn.kind, allIn.kind === 'raise_to' ? allIn.to : undefined)
-                }}
-              >
-                全押
-              </button>
+          {/* 操作行：直接动作 + 加注组同排，按钮按内容定宽，两组留安全间距防误点。 */}
+          <div className="action-main">
+            <div className="action-buttons">
+              {legal.can_fold && (
+                <button
+                  className="btn btn-danger"
+                  aria-label="弃牌"
+                  aria-keyshortcuts="F"
+                  disabled={!canAct}
+                  onClick={() => void send('fold')}
+                >
+                  弃牌 <kbd className="keyhint" aria-hidden="true">F</kbd>
+                </button>
+              )}
+              {legal.can_check && (
+                <button
+                  className="btn"
+                  aria-label="过牌"
+                  aria-keyshortcuts="K"
+                  disabled={!canAct}
+                  onClick={() => void send('check')}
+                >
+                  过牌 <kbd className="keyhint" aria-hidden="true">K</kbd>
+                </button>
+              )}
+              {legal.can_call && (
+                <button
+                  className="btn btn-primary"
+                  aria-label={`跟注 ${chips(legal.call_amount)}`}
+                  aria-keyshortcuts="C"
+                  disabled={!canAct}
+                  onClick={() => void send('call')}
+                >
+                  跟注 {chips(legal.call_amount)} <kbd className="keyhint" aria-hidden="true">C</kbd>
+                </button>
+              )}
+              {/* 无加注权时，全押可能仍是唯一可提交动作（跟注即全下）；有加注权时由快捷注的「全押」承担。 */}
+              {!legal.can_raise && (
+                <button
+                  className="btn btn-allin"
+                  aria-label="全押"
+                  disabled={!canAct || allIn === null}
+                  title={allIn === null ? '当前无合法全押动作' : undefined}
+                  onClick={() => {
+                    if (!allIn) return
+                    void send(allIn.kind, allIn.kind === 'raise_to' ? allIn.to : undefined)
+                  }}
+                >
+                  全押
+                </button>
+              )}
+            </div>
+
+            {legal.can_raise && (
+              <div className="raise-control">
+                <label htmlFor="raise-to" className="sr-only">加注到（本街累计）</label>
+                <input
+                  id="raise-to"
+                  ref={raiseInputRef}
+                  className="input"
+                  type="number"
+                  inputMode="numeric"
+                  aria-label="加注到（本街累计）"
+                  value={raiseDraft}
+                  min={legal.min_raise_to}
+                  max={legal.max_raise_to}
+                  disabled={!canAct}
+                  onChange={(e) => setRaiseDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && canAct) {
+                      e.preventDefault()
+                      sendRaise()
+                    }
+                  }}
+                />
+                <button
+                  className="btn btn-primary"
+                  aria-label="加注"
+                  aria-keyshortcuts="R"
+                  disabled={!canAct}
+                  onClick={sendRaise}
+                >
+                  加注 <kbd className="keyhint" aria-hidden="true">R</kbd>
+                </button>
+                {/* 常驻短提示：紧邻输入框/按钮，输入后仍可见（不依赖 placeholder）。 */}
+                <span className="raise-range">
+                  {chips(legal.min_raise_to)}–{chips(legal.max_raise_to)}
+                  {legal.short_all_in_to !== null ? `（短全押 ${chips(legal.short_all_in_to)}）` : ''}
+                </span>
+              </div>
             )}
           </div>
 
+          {/* 快捷注行：仅填入金额，由「加注」确认提交。 */}
           {legal.can_raise && (
-            <div className="raise-control">
-              <label htmlFor="raise-to">加注到（本街累计）</label>
-              <input
-                id="raise-to"
-                ref={raiseInputRef}
-                className="input"
-                type="number"
-                inputMode="numeric"
-                value={raiseDraft}
-                placeholder={`${legal.min_raise_to} – ${legal.max_raise_to}`}
-                min={legal.min_raise_to}
-                max={legal.max_raise_to}
-                disabled={!canAct}
-                onChange={(e) => setRaiseDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && canAct) {
-                    e.preventDefault()
-                    sendRaise()
-                  }
-                }}
-              />
-              <button
-                className="btn btn-primary"
-                aria-label="加注"
-                aria-keyshortcuts="R"
-                disabled={!canAct}
-                onClick={sendRaise}
-              >
-                加注 <kbd className="keyhint" aria-hidden="true">R</kbd>
-              </button>
-              <span className="raise-hint">
-                范围 {chips(legal.min_raise_to)} – {chips(legal.max_raise_to)}
-                {legal.short_all_in_to !== null ? `（短全押 ${chips(legal.short_all_in_to)}）` : ''}
-              </span>
-
-              <div className="quick-bets" role="group" aria-label="快捷注">
-                {quickChips.map(({ chip, to }) => (
-                  <button
-                    key={chip.key}
-                    type="button"
-                    className={`quick-bet${chip.allIn ? ' is-allin' : ''}`}
-                    data-quick={chip.key}
-                    aria-label={chip.label}
-                    aria-pressed={to !== null && raiseDraft !== '' && Number(raiseDraft) === to}
-                    title={to === null ? '当前无合法加注' : `加注到 ${chips(to)}`}
-                    disabled={!canAct || to === null}
-                    onClick={() => {
-                      if (to !== null) applyQuickTo(to)
-                    }}
-                  >
-                    <span className="qb-ratio" aria-hidden="true">{chip.short}</span>
-                    <span className="qb-to" aria-hidden="true">{to === null ? '—' : chips(to)}</span>
-                  </button>
-                ))}
-              </div>
+            <div className="quick-bets" role="group" aria-label="快捷注">
+              {quickChips.map(({ chip, to }) => (
+                <button
+                  key={chip.key}
+                  type="button"
+                  className={`quick-bet${chip.allIn ? ' is-allin' : ''}`}
+                  data-quick={chip.key}
+                  aria-label={chip.label}
+                  aria-pressed={to !== null && raiseDraft !== '' && Number(raiseDraft) === to}
+                  title={to === null ? '当前无合法加注' : `加注到 ${chips(to)}`}
+                  disabled={!canAct || to === null}
+                  onClick={() => {
+                    if (to !== null) applyQuickTo(to)
+                  }}
+                >
+                  <span className="qb-ratio" aria-hidden="true">{chip.short}</span>
+                  <span className="qb-to" aria-hidden="true">{to === null ? '—' : chips(to)}</span>
+                </button>
+              ))}
             </div>
           )}
         </div>

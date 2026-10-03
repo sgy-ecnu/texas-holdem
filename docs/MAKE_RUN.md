@@ -185,3 +185,207 @@ make: *** [run] Error 241
 - 未验证：真实 provider / `make dev-live`（不付费）；未 commit/push；未改 Go、`web/src`、
   config、`docs/contracts.md`。
 - `make run` 每次执行 `npm ci`，比 `make dev` 慢；若只重启后端继续用 `make dev`。
+
+---
+
+# 追加轮：8081 残留 server 自动清理（2026-10-03）
+
+## 问题根因
+
+`make run` = 前端编译 + `go run ./cmd/server`。旧 `go run` 编译出的 server 二进制进程
+若仍占用 8081，新 `go run` 会因端口被占启动失败；用户看到的仍是旧进程返回的嵌入 bundle
+（`go:embed dist` 编译期嵌入，旧进程永远返回旧样式）。本轮在启动服务前自动检测并**安全**
+清理本项目残留 server。
+
+## 改动点
+
+- `scripts/local.py`
+  - 新增 `stop_stale_server(port=STALE_SERVER_PORT)`（`STALE_SERVER_PORT = 8081`）：
+    `port_open` 空闲则跳过；占用时用 `lsof -nP -iTCP:8081 -sTCP:LISTEN -t` 取监听 PID，
+    经 `server_listener_identity()` 核验身份后 SIGTERM，等待 20s 超时 SIGKILL。
+  - 新增 `server_listener_identity(pid)`：要求进程存在且归属当前用户、原生 argv 可读
+    （`process_arguments` 的 Darwin KERN_PROCARGS2，不信任 ps 文本）、可执行文件在
+    `go run` 的 `GOCACHE` 下、cwd 为本项目根目录、argv 含 `cmd/server`/`texas-holdem`；
+    采集前后启动时间一致。任一不满足 → `STALE_SERVER_UNKNOWN_PROCESS_MANUAL`，不杀。
+  - 新增 `go_run_parent_identity(pid)`：沿 ppid 核验父进程为 `go run ./cmd/server`；
+    无法确认返回 None（不杀）。辅助：`go_cache`、`listener_pids`、`project_process_cwd`、`_stop_pid`。
+  - `run()`：`frontend()` 后、`go_task("dev")` 前调用 `stop_stale_server()`。
+  - `go_task(action)`：`action in {"dev","dev-live"}` 时启动前调用 `stop_stale_server()`。
+- `tests/e2e/test_local.py`：新增 12 项（清理跳过/清理顺序/拒绝陌生进程/监听不可识别/
+  身份核验接受与拒绝/父进程核验/go_task 调用点与 build 不调用），并更新 2 项既有 run 测试。
+
+## 清理顺序（go run 父进程 vs server 子进程）
+
+监听 8081 的是 `go run` 编译出的 **server 子进程**；其父为 `go run` 进程。**必须先生命
+令子进程退出，再兜底处理父进程**：若先杀父进程，子进程被 reparent 后仍会继续占用 8081。
+子进程退出后 `go run` 自行结束，父进程通常已不存在（`_stop_pid` 检测到不存在即跳过）。
+实测父子链：`python3 scripts/local.py dev`(14769) → `go run ./cmd/server`(14771) →
+GOCACHE server(14775，监听 8081)。
+
+## `make test-scripts`（全量，原始输出）
+
+```text
+python3 tests/e2e/test_local.py
+
+build: passed; exit=0
+config-local: already-present; not overwritten
+brew-service: mysql@8.4 start requested
+brew-service: redis start requested
+init: dedicated database/user created; scoped grants; no root changes
+stale-server: port 8081 free; nothing to stop
+stale-server: stopping project server pid=14775
+stale-server: port 8081 cleared
+test_child_env_removes_admin_and_inherited_config: PASS
+test_config_cli_env_only_forwards_whitelist: PASS
+test_config_cli_failure_is_blocker_not_default: PASS
+test_config_public_derives_endpoint_from_cli_not_constant: PASS
+test_config_public_honors_explicit_env_override: PASS
+test_config_public_rejects_non_loopback_host: PASS
+test_config_public_rejects_non_whitelist_and_secret_fields: PASS
+test_config_public_requires_consistent_address: PASS
+test_dev_catalog_allowed_paid_still_disabled: PASS
+test_dev_live_only_explicit_action_changes_backend_switch: PASS
+test_doctor_rejects_env_file_without_private_mode: PASS
+test_duplicate_rejected: PASS
+test_e2e_ambient_paid_and_catalog_cannot_override: PASS
+test_e2e_catalog_override_does_not_read_user_config: PASS
+test_existing_runtime_permissions_not_changed: PASS
+test_fallback_ports_allowed: PASS
+test_go_contract_check_rejects_run_without_match: PASS
+test_go_run_parent_identity_accepts_project_go_run: PASS
+test_go_run_parent_identity_rejects_unrelated_parent: PASS
+test_go_task_build_does_not_clean_stale_server: PASS
+test_go_task_dev_cleans_stale_server_before_start: PASS
+test_identity_forged_signature_rejected: PASS
+test_identity_kernel_executable_spoof_rejected: PASS
+test_identity_legal_path_with_spaces_accepted: PASS
+test_identity_mysql_path_suffix_rejected: PASS
+test_identity_pid_birth_metadata_reused_rejected: PASS
+test_identity_redis_similar_config_argument_rejected: PASS
+test_identity_redis_similar_config_path_rejected: PASS
+test_identity_reused_pid_real_executable_rejected: PASS
+test_identity_unavailable_argv_rejected_no_signal: PASS
+test_identity_zombie_is_not_live: PASS
+test_json_env_roundtrip: PASS
+test_load_env_accepts_near_empty_file: PASS
+test_main_run_action_dispatches_to_run: PASS
+test_mysql_password_only_in_child_environment: PASS
+test_no_shell_expansion: PASS
+test_nonlocal_mysql_rejected: PASS
+test_nonlocal_redis_rejected: PASS
+test_paid_models_rejected: PASS
+test_permissions_and_symlink: PASS
+test_pid_identity_mismatch_rejected: PASS
+test_probe_resolved_port_in_use_refuses_without_signal: PASS
+test_protected_stat_rejects_wrong_mode: PASS
+test_real_catalog_rejected: PASS
+test_redaction_does_not_consume_next_test_line: PASS
+test_run_compiles_frontend_before_starting_dev: PASS
+test_run_frontend_failure_stops_before_service: PASS
+test_safe_output_preserves_failure_and_redacts_credentials: PASS
+test_server_listener_identity_accepts_go_build_cache_server: PASS
+test_server_listener_identity_rejects_foreign_cwd: PASS
+test_server_listener_identity_rejects_non_go_run_executable: PASS
+test_server_listener_identity_unavailable_argv_refuses: PASS
+test_service_env_dev_forwards_whitelist_and_ignores_ambient_paid: PASS
+test_service_env_dev_live_only_explicit_action_enables_paid: PASS
+test_service_env_e2e_forces_mock_and_false_and_drops_legacy_nonsensitive: PASS
+test_service_env_injects_absolute_config_file: PASS
+test_setup_preserves_existing_env: PASS
+test_setup_preserves_existing_local_config: PASS
+test_setup_writes_generated_credentials_to_local_config: PASS
+test_stop_rechecks_identity_before_signal: PASS
+test_stop_stale_server_refuses_unknown_process_without_signal: PASS
+test_stop_stale_server_skips_when_port_free: PASS
+test_stop_stale_server_stops_listener_then_go_run_parent: PASS
+test_stop_stale_server_unidentified_listener_refuses: PASS
+test_storage_config_absent_password_falls_back_to_env: PASS
+test_storage_config_explicit_empty_password_ignores_env: PASS
+test_storage_config_merges_direct_fields_over_env: PASS
+test_storage_config_null_password_falls_back_to_env: PASS
+test_unknown_key_rejected: PASS
+test_validate_tolerates_empty_or_near_empty_env: PASS
+scripts: tests=70 passed=70 failed=0
+```
+
+> 注：测试中 `stale-server: stopping project server pid=14775` 是被 mock 的 `_stop_pid`
+> 打印，未真杀，且断言顺序为「先监听子进程、后 go run 父进程」。
+
+## 真实闭环：制造旧 server 残留 → `make run` 自动清理
+
+闭环前 8081 上已有旧 `go run` server（PID 14775，cwd=项目根、可执行文件在 GOCACHE，
+父 14771=`go run ./cmd/server`）。编排脚本启动 `make run`，等待监听 PID 变化，比对服务
+返回 JS 与 `web/dist` 的 sha256，再 SIGINT 停止，检查端口。
+
+```text
+== before: stale listener on 8081 ==
+COMMAND   PID    USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+server  14775 gaosper    7u  IPv4 0x9bf52119350c5fcf      0t0  TCP 127.0.0.1:8081 (LISTEN)
+old listener pid=14775
+old go-run parent pid=14771
+old listener start: Sat Oct  3 23:33:39 2026
+== before: old process served assets ==
+/assets/index-Bi6lv2MK.js
+/assets/index-BQyAYR3_.css
+old served js ref=/assets/index-Bi6lv2MK.js
+old served js sha256=bbdbb71f582fd0086b262a03f6f4dd956b0c26cc5a2d3f63a6694d0baa97d4c3
+
+== start: make run (background) ==
+make pid=15023
+python pid=15032
+
+== wait for stale server to be replaced ==
+new listener pid=15233
+old listener still alive? no
+old go-run parent still alive? no
+
+== health (new process) ==
+{"mysql":"available","redis":"available","storage_degraded":false,"allow_paid_models":false,"max_live_calls":1000}
+
+== served index asset refs (new process) ==
+/assets/index-Bi6lv2MK.js
+/assets/index-BQyAYR3_.css
+new served js ref=/assets/index-Bi6lv2MK.js
+served js sha256=bbdbb71f582fd0086b262a03f6f4dd956b0c26cc5a2d3f63a6694d0baa97d4c3
+local  js sha256=bbdbb71f582fd0086b262a03f6f4dd956b0c26cc5a2d3f63a6694d0baa97d4c3
+bundle-match=yes
+
+== stop: SIGINT to python local.py run ==
+make exit=2
+== after: port state ==
+8081 closed
+3306 open
+6379 open
+residual project server procs:
+(none)
+```
+
+`make run` 自身原始日志（清理与新监听关键行）：
+
+```text
+stale-server: stopping project server pid=14775
+stale-server: port 8081 cleared
+stale-server: port 8081 free; nothing to stop
+2026/10/03 23:40:02 INFO [HTTP] server listening addr=127.0.0.1:8081
+```
+
+结论：
+- **旧进程被清**：旧监听 PID 14775 与其 `go run` 父 14771 均消失（`still alive? no`），
+  新监听 PID 15233 出现；日志显示 `stopping project server pid=14775` → `port 8081 cleared`。
+- **只清本项目 server**：身份核验依据为 GOCACHE 可执行路径 + 项目根 cwd + 原生 argv，
+  未触及 MySQL 3306 / Redis 6379（`3306 open`、`6379 open`）。
+- **新 bundle 一致**：新进程返回的 `/assets/index-Bi6lv2MK.js` 与本地 `web/dist` 同资源
+  sha256 完全一致（`bbdbb71f…`）；health 200，`allow_paid_models=false`。
+- **幂等**：`run()` 调用后 `go_task("dev")` 再次调用，第二次 `port 8081 free; nothing to stop`。
+- **退出后**：8081 释放，无 `cmd/server` 残留；`make` 仍报既有 Error 241（Ctrl-C 退出码）。
+
+## 未验证 / 边界
+
+- 未制造「旧进程嵌入旧 bundle、新进程嵌入新 bundle 且二者不同」的对比：本机 `web/dist`
+  自旧进程启动前未变，两次 bundle hash 相同；已验证的是「新进程返回的 bundle 与
+  `make run` 新构建的 `web/dist` 一致」。
+- 陌生进程场景仅由 mock 单测覆盖（拒绝且不发信号），未真实验证「他人进程占 8081」的
+  线上表现；`lsof` 对非本用户进程可能不回 PID，此时 `listener_pids` 为空 → 同样拒绝。
+- `stop_stale_server` 固定检测 8081；若通过 `POKER_HTTP_PORT`/YAML 改端口，本次不清理该
+  端口的残留（本次 bug 固定为 8081）。不触碰 runtime 隔离的 mysql/redis。
+- 未 commit/push；未改 Go、`web/src`、config、`docs/contracts.md`。

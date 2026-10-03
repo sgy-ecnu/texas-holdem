@@ -64,8 +64,9 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
   // 控制命令与真人动作共用同一串行边界：任一进行中时都禁用另一侧，避免竞态。
   const controlsBusy = pending !== null || acting
 
-  async function control(command: Command) {
-    if (!game) return
+  // 返回是否成功，供「先停止再返回」这类复合操作判断能否进入下一步。
+  async function control(command: Command): Promise<boolean> {
+    if (!game) return false
     setPending(command)
     setActionError(null)
     try {
@@ -80,21 +81,29 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
           /* 下一轮轮询会继续对齐 */
         }
       }
+      return true
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : '操作失败，请稍后重试。')
       if (err instanceof ApiError && err.status === 409) {
         // 状态冲突：拉取最新状态对齐，不臆测结果。
         void refresh().catch(() => undefined)
       }
+      return false
     } finally {
       setPending(null)
     }
   }
 
+  // 已创建未开始：先 stop 释放非终态锁，避免之后新建撞 409，成功后再返回配置页；
+  // stop 失败则留在本页展示错误，不做二次跳转。
+  async function discardAndExit() {
+    if (await control('stop')) onExit()
+  }
+
   const stale = problem !== null
 
   return (
-    <div className="container">
+    <div className="container container-play">
       {problem && (
         <div className={`banner ${problem.kind === 'unknown' ? 'warn' : 'error'}`} role="alert">
           <span>
@@ -143,13 +152,23 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
         <span className="grow" />
         <span className="controls">
           {game.status === 'created' && (
-            <button
-              className="btn btn-primary btn-sm"
-              disabled={controlsBusy}
-              onClick={() => control('start')}
-            >
-              {pending === 'start' ? '启动中…' : '开始'}
-            </button>
+            <>
+              <button
+                className="btn btn-primary btn-sm"
+                disabled={controlsBusy}
+                onClick={() => control('start')}
+              >
+                {pending === 'start' ? '启动中…' : '开始'}
+              </button>
+              <button
+                className="btn btn-danger btn-sm"
+                disabled={controlsBusy}
+                title="停止这个尚未开始的牌局并返回配置页"
+                onClick={() => void discardAndExit()}
+              >
+                {pending === 'stop' ? '放弃中…' : '放弃并返回'}
+              </button>
+            </>
           )}
           {game.status === 'running' && (
             <>
@@ -206,12 +225,13 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
         </span>
       </div>
 
-      <div className={`table-wrap${stale ? ' is-stale' : ''}`}>
-        <PokerTable game={game} models={models} player={game.player} />
-        {stale && <div className="stale-tag">画面已过期 · 等待状态确认</div>}
-      </div>
+      {/* 牌桌居中；操作条紧贴牌桌正下方，一屏内无需下滑即可操作。 */}
+      <div className="play-layout">
+        <div className={`table-wrap${stale ? ' is-stale' : ''}`}>
+          <PokerTable game={game} models={models} player={game.player} />
+          {stale && <div className="stale-tag">画面已过期 · 等待状态确认</div>}
+        </div>
 
-      <div className="lower-deck">
         <ActionDock
           game={game}
           isPlayerView={isPlayerView}
@@ -220,49 +240,50 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
           onApply={apply}
           onRefresh={refresh}
         />
+      </div>
 
-        <div className="play-grid">
-          <div className="panel panel-pad">
-            <h2 className="section-title">行动历史</h2>
-            <p className="section-hint">
-              按发生顺序滚动展示已公开动作，新动作会短暂高亮；不含任何未结束手牌的底牌信息。
-            </p>
-            <ActionFeed actions={history} seats={game.seats} />
+      {/* 次要面板：行动历史与运行信息放在操作条之后，不抢占操作条的可见性。 */}
+      <div className="play-meta">
+        <div className="panel panel-pad">
+          <h2 className="section-title">行动历史</h2>
+          <p className="section-hint">
+            按发生顺序滚动展示已公开动作，新动作会短暂高亮；不含任何未结束手牌的底牌信息。
+          </p>
+          <ActionFeed actions={history} seats={game.seats} />
+        </div>
+
+        <div className="panel panel-pad">
+          <h2 className="section-title">运行信息</h2>
+          <p className="section-hint">存储与模型可用性；接口失败时显示明确文案，不以前一帧冒充成功。</p>
+          <div className="kv info-kv">
+            <span>
+              <b>牌局 ID</b>
+              <span className="mono"> {game.id}</span>
+            </span>
+            <span>
+              <b>真人座位</b>{' '}
+              {game.human_seat === null ? '无（全 AI）' : `座位 ${game.human_seat}`}
+            </span>
+            <span>
+              <b>存储</b>{' '}
+              {game.storage_degraded ? '降级（缓存不可信，已回源数据库）' : '正常'}
+              {health ? `（MySQL：${health.mysql} / Redis：${health.redis}）` : ''}
+            </span>
+            <span>
+              <b>付费模型授权</b> {health?.allow_paid_models ? '允许' : '禁止'}
+            </span>
           </div>
-
-          <div className="panel panel-pad">
-            <h2 className="section-title">运行信息</h2>
-            <p className="section-hint">存储与模型可用性；接口失败时显示明确文案，不以前一帧冒充成功。</p>
-            <div className="kv" style={{ flexDirection: 'column', gap: 8 }}>
-              <span>
-                <b>牌局 ID</b>
-                <span className="mono"> {game.id}</span>
-              </span>
-              <span>
-                <b>真人座位</b>{' '}
-                {game.human_seat === null ? '无（全 AI）' : `座位 ${game.human_seat}`}
-              </span>
-              <span>
-                <b>存储</b>{' '}
-                {game.storage_degraded ? '降级（缓存不可信，已回源数据库）' : '正常'}
-                {health ? `（MySQL：${health.mysql} / Redis：${health.redis}）` : ''}
-              </span>
-              <span>
-                <b>付费模型授权</b> {health?.allow_paid_models ? '允许' : '禁止'}
-              </span>
-            </div>
-            <div className="models-grid" style={{ marginTop: 12 }}>
-              {models.map((m) => (
-                <div className="model-card" key={m.ref}>
-                  <div className="ref" title={m.ref}>
-                    {m.ref}
-                  </div>
-                  <div className="meta">
-                    <span className={`avail ${m.availability}`}>{AVAILABILITY_LABEL[m.availability]}</span>
-                  </div>
+          <div className="models-grid info-models">
+            {models.map((m) => (
+              <div className="model-card" key={m.ref}>
+                <div className="ref" title={m.ref}>
+                  {m.ref}
                 </div>
-              ))}
-            </div>
+                <div className="meta">
+                  <span className={`avail ${m.availability}`}>{AVAILABILITY_LABEL[m.availability]}</span>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>

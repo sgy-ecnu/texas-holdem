@@ -369,17 +369,21 @@ class LocalSafety(unittest.TestCase):
     def test_run_compiles_frontend_before_starting_dev(self):
         calls = []
         with patch.object(local, "frontend", side_effect=lambda: calls.append("frontend")), \
+                patch.object(local, "stop_stale_server",
+                             side_effect=lambda: calls.append("stop-stale")), \
                 patch.object(local, "go_task", side_effect=lambda action: calls.append(action) or 0):
             result = local.run()
-        self.assertEqual(calls, ["frontend", "dev"])
+        self.assertEqual(calls, ["frontend", "stop-stale", "dev"])
         self.assertEqual(result, 0)
 
     def test_run_frontend_failure_stops_before_service(self):
         with patch.object(local, "frontend",
                           side_effect=local.SafeError("FRONTEND_STAGE_FAILED_FRONTEND_BUILD")), \
+                patch.object(local, "stop_stale_server") as stale, \
                 patch.object(local, "go_task") as go:
             with self.assertRaises(local.SafeError):
                 local.run()
+        stale.assert_not_called()
         go.assert_not_called()
 
     def test_main_run_action_dispatches_to_run(self):
@@ -387,6 +391,159 @@ class LocalSafety(unittest.TestCase):
                 patch.object(local, "run", return_value=7) as run:
             self.assertEqual(local.main(), 7)
         run.assert_called_once_with()
+
+    # --- make run/dev：8081 残留本项目 server 的身份核验与安全清理（不真杀进程） ---
+
+    def stale_identity_capture(self, pid, cwd=None, argv=None, exe=None):
+        """构造 process_arguments/lsof 采集，供 server_listener_identity 身份核验。"""
+        root = str(local.ROOT.resolve())
+
+        def capture(cmd, **kwargs):
+            if cmd[:2] == ["lsof", "-nP"] and "-d" in cmd and "cwd" in cmd:
+                return SimpleNamespace(returncode=0, stdout="p" + str(pid) + "\nn" + (cwd or root) + "\n")
+            return SimpleNamespace(returncode=0, stdout="")
+        return capture
+
+    def test_stop_stale_server_skips_when_port_free(self):
+        with patch.object(local, "port_open", return_value=False), \
+                patch.object(local, "listener_pids") as pids, \
+                patch.object(local.os, "kill") as kill:
+            self.assertFalse(local.stop_stale_server())
+        pids.assert_not_called()
+        kill.assert_not_called()
+
+    def test_stop_stale_server_stops_listener_then_go_run_parent(self):
+        stopped = []
+        with patch.object(local, "port_open", return_value=True), \
+                patch.object(local, "listener_pids", return_value=[14775]), \
+                patch.object(local, "server_listener_identity",
+                             return_value={"pid": 14775, "started": ["u", "t"]}), \
+                patch.object(local, "go_run_parent_identity",
+                             return_value={"pid": 14771, "started": ["u", "t2"]}), \
+                patch.object(local, "_stop_pid",
+                             side_effect=lambda identity: stopped.append(identity["pid"])):
+            self.assertTrue(local.stop_stale_server())
+        # 必须先杀监听子进程，再兜底杀 go run 父进程，避免子进程被 reparent 后占端口。
+        self.assertEqual(stopped, [14775, 14771])
+
+    def test_stop_stale_server_refuses_unknown_process_without_signal(self):
+        with patch.object(local, "port_open", return_value=True), \
+                patch.object(local, "listener_pids", return_value=[999]), \
+                patch.object(local, "server_listener_identity",
+                             side_effect=local.SafeError("STALE_SERVER_UNKNOWN_PROCESS_MANUAL")), \
+                patch.object(local, "_stop_pid") as stop, \
+                patch.object(local.os, "kill") as kill:
+            with self.assertRaises(local.SafeError):
+                local.stop_stale_server()
+        stop.assert_not_called()
+        kill.assert_not_called()
+
+    def test_stop_stale_server_unidentified_listener_refuses(self):
+        for pids in ([], [1, 2]):
+            with patch.object(local, "port_open", return_value=True), \
+                    patch.object(local, "listener_pids", return_value=pids), \
+                    patch.object(local, "_stop_pid") as stop, \
+                    patch.object(local.os, "kill") as kill:
+                with self.assertRaises(local.SafeError):
+                    local.stop_stale_server()
+            stop.assert_not_called()
+            kill.assert_not_called()
+
+    def test_server_listener_identity_accepts_go_build_cache_server(self):
+        exe = "/fixture/go-build/ab/abc-d/server"
+        with patch.object(local, "process_snapshot", return_value=("u", "SN", "Sat Oct 3 12:00:00 2026")), \
+                patch.object(local, "process_arguments", return_value=(exe, [exe])), \
+                patch.object(local, "go_cache", return_value=Path("/fixture/go-build")), \
+                patch.object(local, "canonical_path", side_effect=lambda value: Path(os.path.normpath(value))), \
+                patch.object(local, "captured", side_effect=self.stale_identity_capture(14775)):
+            identity = local.server_listener_identity(14775)
+        self.assertEqual(identity["pid"], 14775)
+
+    def test_server_listener_identity_rejects_non_go_run_executable(self):
+        with patch.object(local, "process_snapshot", return_value=("u", "SN", "Sat Oct 3 12:00:00 2026")), \
+                patch.object(local, "process_arguments",
+                             return_value=("/fixture/other/server", ["/fixture/other/server"])), \
+                patch.object(local, "go_cache", return_value=Path("/fixture/go-build")), \
+                patch.object(local, "canonical_path", side_effect=lambda value: Path(os.path.normpath(value))), \
+                patch.object(local, "captured", side_effect=self.stale_identity_capture(999)):
+            with self.assertRaises(local.SafeError):
+                local.server_listener_identity(999)
+
+    def test_server_listener_identity_rejects_foreign_cwd(self):
+        exe = "/fixture/go-build/ab/abc-d/server"
+        with patch.object(local, "process_snapshot", return_value=("u", "SN", "Sat Oct 3 12:00:00 2026")), \
+                patch.object(local, "process_arguments", return_value=(exe, [exe])), \
+                patch.object(local, "go_cache", return_value=Path("/fixture/go-build")), \
+                patch.object(local, "canonical_path", side_effect=lambda value: Path(os.path.normpath(value))), \
+                patch.object(local, "captured", side_effect=self.stale_identity_capture(999, cwd="/tmp/elsewhere")):
+            with self.assertRaises(local.SafeError):
+                local.server_listener_identity(999)
+
+    def test_server_listener_identity_unavailable_argv_refuses(self):
+        with patch.object(local, "process_snapshot", return_value=("u", "SN", "Sat Oct 3 12:00:00 2026")), \
+                patch.object(local, "process_arguments",
+                             side_effect=local.SafeError("RUNTIME_ARGV_INSPECTION_FAILED")), \
+                patch.object(local.os, "kill") as kill:
+            with self.assertRaises(local.SafeError):
+                local.server_listener_identity(999)
+        kill.assert_not_called()
+
+    def test_go_run_parent_identity_accepts_project_go_run(self):
+        def capture(cmd, **kwargs):
+            if cmd[:1] == ["ps"]:
+                return SimpleNamespace(returncode=0, stdout="14771\n")
+            return SimpleNamespace(returncode=0, stdout="n" + str(local.ROOT.resolve()) + "\n")
+        with patch.object(local, "process_snapshot", return_value=("u", "SNs", "Sat Oct 3 12:00:00 2026")), \
+                patch.object(local, "process_arguments",
+                             return_value=("/opt/homebrew/bin/go", ["go", "run", "./cmd/server"])), \
+                patch.object(local, "canonical_path", side_effect=lambda value: Path(os.path.normpath(value))), \
+                patch.object(local, "captured", side_effect=capture):
+            parent = local.go_run_parent_identity(14775)
+        self.assertTrue(parent is not None and parent["pid"] == 14771)
+
+    def test_go_run_parent_identity_rejects_unrelated_parent(self):
+        with patch.object(local, "process_snapshot", return_value=("u", "SNs", "Sat Oct 3 12:00:00 2026")), \
+                patch.object(local, "process_arguments",
+                             return_value=("/bin/zsh", ["zsh", "-c", "make run"])), \
+                patch.object(local, "canonical_path", side_effect=lambda value: Path(os.path.normpath(value))), \
+                patch.object(local, "captured",
+                             return_value=SimpleNamespace(returncode=0, stdout="1\n")):
+            self.assertIsNone(local.go_run_parent_identity(14775))
+
+    def test_go_task_dev_cleans_stale_server_before_start(self):
+        class FakeStream:
+            def __iter__(self):
+                return iter(())
+
+        class FakeProc:
+            pid = 1234
+            stdout = FakeStream()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def wait(self, timeout=None):
+                return 0
+
+        with patch.object(local.Path, "is_file", return_value=True), \
+                patch.object(local, "stop_stale_server") as stale, \
+                patch.object(local, "action_env", return_value={}), \
+                patch.object(local.subprocess, "Popen", return_value=FakeProc()):
+            result = local.go_task("dev")
+        stale.assert_called_once_with()
+        self.assertEqual(result, 0)
+
+    def test_go_task_build_does_not_clean_stale_server(self):
+        with patch.object(local.Path, "is_file", return_value=True), \
+                patch.object(local, "stop_stale_server") as stale, \
+                patch.object(local, "child_env", return_value={}), \
+                patch.object(local, "captured",
+                             return_value=SimpleNamespace(returncode=0, stdout="", stderr="")):
+            local.go_task("build")
+        stale.assert_not_called()
 
     # --- 配置 CLI 契约（端口/优先级/env 安全）：冻结 Go CLI 消费侧 RED 测试 ---
 

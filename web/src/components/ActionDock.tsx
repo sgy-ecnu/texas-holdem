@@ -71,8 +71,9 @@ export function ActionDock({
 
   const pct = active && totalMs > 0 ? Math.max(0, Math.min(100, (remainingMs / totalMs) * 100)) : 0
   const urgent = expired || remainingMs <= 10_000
-  // 轮到自己时以第二人称呈现，避免与座位名（可能也叫 AI-x）混淆。
-  const who = myTurn ? '你' : actor === null ? '—' : seatName(actor)
+  // 轮到自己时不再另起「你」：状态文本本身已是第二人称「轮到你出牌」，避免重复。
+  // 其余状态才补行动者名字，帮助观战者定位是谁在行动。
+  const who = !myTurn && actor !== null ? seatName(actor) : ''
 
   return (
     <section
@@ -81,34 +82,35 @@ export function ActionDock({
       aria-live="polite"
       aria-label="当前行动者与操作区"
     >
+      {/* 状态行：紧凑一行，进度条以 3px 细线并入本行底部（不再独占一行）。 */}
       <div className="dock-turn">
         <span className={`turn-orb ${turnKind}`} aria-hidden="true" />
-        <span className="turn-who">{who}</span>
+        {who && <span className="turn-who">{who}</span>}
         <span className="dock-state">{stateText()}</span>
         {myTurn && active && (
           <span className={`countdown${urgent ? ' urgent' : ''}`}>
             {expired ? '已截止' : formatRemaining(remainingMs)}
           </span>
         )}
-      </div>
 
-      {myTurn && active && (
-        <div
-          className="dock-timer"
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(pct)}
-          aria-label="真人行动剩余时间"
-        >
-          <div className={`dock-timer-fill${urgent ? ' urgent' : ''}`} style={{ width: `${pct}%` }} />
-        </div>
-      )}
-      {thinking && (
-        <div className="dock-timer is-thinking" aria-hidden="true">
-          <div className="dock-timer-fill" />
-        </div>
-      )}
+        {myTurn && active && (
+          <div
+            className="dock-timer"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(pct)}
+            aria-label="真人行动剩余时间"
+          >
+            <div className={`dock-timer-fill${urgent ? ' urgent' : ''}`} style={{ width: `${pct}%` }} />
+          </div>
+        )}
+        {thinking && (
+          <div className="dock-timer is-thinking" aria-hidden="true">
+            <div className="dock-timer-fill" />
+          </div>
+        )}
+      </div>
 
       {isPlayerView && (
         <HumanActionPanel

@@ -487,3 +487,13 @@ Darwin 的 ps/sysctl/lsof 核验与 `os.kill` 不是同一个原子操作。本�
 非零竞态窗口**，且 ps lstart 仅有秒级分辨率；不能宣称彻底消除同秒 PID 复用。
 旧 metadata 没有 started 字段时，仅在完整固定路径身份全部匹配后接受；本轮实际
 start 已将新 metadata 写成 PID + 启动时间。未采用 force-kill，也未对陌生 PID 发 signal。
+
+### make run/dev 自动清理 8081 残留 server（2026-10-03）
+
+`make run` 与 `make dev` 启动服务前会调用 `stop_stale_server()`：若 8081 被占用，取监听
+PID 并核验其为本项目 `go run` 编译出的 server（可执行文件在 `GOCACHE` 下、cwd 为本项目
+根目录、原生 argv 可读且含 `cmd/server`/`texas-holdem`），核验通过才先 SIGTERM 监听子进程
+再兜底清理 `go run` 父进程（顺序不可颠倒），超时 SIGKILL；陌生/无法核验的进程一律拒绝并
+提示手动处理，绝不误杀。该清理只针对 8081 上的本项目 server，不触碰 runtime 隔离的
+mysql/redis。真实闭环（旧 PID 14775 被清、新 PID 返回与 `web/dist` 一致 bundle、health 200、
+退出后 8081 释放且 3306/6379 保留）与脚本测试 70/70 见 [MAKE_RUN.md](MAKE_RUN.md) 追加轮。

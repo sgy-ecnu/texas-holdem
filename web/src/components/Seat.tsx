@@ -18,10 +18,15 @@ interface Props {
   // 真人本人座位在本手的两张底牌；其他座位恒为 undefined，只画牌背。
   holeCards?: string[]
   holeHidden: boolean
+  // 右半侧座位把牌背镜像到右侧，保证底牌始终朝桌外生长。
+  flipHole?: boolean
   index: number
 }
 
-// 座位卡：名称 / 模型 / 筹码 / 位置标记 / 行动状态。
+// 座位卡：压扁成固定两行。
+//   第一行 = 座位号 + 名字 + 身份/状态/位置标记（真人 / D / SB / BB / 弃牌 / 全下 / 出局）
+//   第二行 = 剩余筹码（模型名降级：默认只进 title，宽屏才占位显示）
+// 「本轮/累计」已拆到桌沿徽章（见 PokerTable .rim-mark）；此处不再逐座位长出高度。
 // 手中以 hand.players[].stack 为实时余额，seat.stack 是最近结算余额。
 export function Seat({
   seat,
@@ -36,6 +41,7 @@ export function Seat({
   isHuman,
   holeCards,
   holeHidden,
+  flipHole = false,
   index,
 }: Props) {
   const live = player !== null
@@ -45,25 +51,25 @@ export function Seat({
   if (isActor) classes.push('is-actor')
   if (isHuman) classes.push('is-human')
   if (isDimmed) classes.push('is-dimmed')
+  if (flipHole) classes.push('is-right')
   if (status === 'folded') classes.push('is-folded')
   if (status === 'out') classes.push('is-out')
 
   const hasOwnCards = holeCards !== undefined && holeCards.length > 0
+  const modelLabel = isHuman ? '真人玩家' : model ? model.label : seat.model_ref || '未绑定模型'
+  const statusKey = status !== 'active' ? (status === 'all_in' ? 'allin' : status) : null
 
   return (
-    <div className={classes.join(' ')} style={{ animationDelay: `${index * 45}ms` }}>
+    <div
+      className={classes.join(' ')}
+      style={{ animationDelay: `${index * 45}ms` }}
+      title={`${seat.name} · ${modelLabel}`}
+    >
       {isActor && actorLabel && (
         <span className="turn-badge" role="status">
           {actorLabel}
         </span>
       )}
-
-      <div className="seat-tags">
-        {isHuman && <span className="tag human">真人</span>}
-        {isButton && <span className="tag dealer">D</span>}
-        {isSmallBlind && <span className="tag blind">SB</span>}
-        {isBigBlind && <span className="tag blind">BB</span>}
-      </div>
 
       {hasOwnCards ? (
         <div className="hole hole-open" aria-label="我的底牌">
@@ -80,35 +86,38 @@ export function Seat({
         )
       )}
 
-      <div className="seat-head">
+      <div className="seat-row1">
         <span className="seat-no">{seat.seat}</span>
         <span className="seat-name" title={seat.name}>
           {seat.name}
         </span>
+        <span className="seat-tags">
+          {isHuman && <span className="tag human">真人</span>}
+          {isButton && <span className="tag dealer">D</span>}
+          {isSmallBlind && <span className="tag blind">SB</span>}
+          {isBigBlind && <span className="tag blind">BB</span>}
+          {statusKey && (
+            <span className={`tag status-${statusKey}`}>{PLAYER_STATUS_LABEL[status]}</span>
+          )}
+        </span>
       </div>
-      <div className="seat-model" title={isHuman ? undefined : seat.model_ref}>
-        {isHuman ? '真人玩家' : model ? model.label : seat.model_ref || '未绑定模型'}
-      </div>
+
       {/* 醒目数字始终是「剩余筹码」（手中取 hand.players[].stack 实时余额，赛后取 seat.stack 结算余额）。 */}
-      <div
-        className="seat-stack"
-        data-live={live ? 'true' : 'false'}
-        title={live ? '剩余筹码 = 初始筹码 − 累计投入' : '最近结算筹码'}
-      >
-        {chips(stack)}
-        <span className="unit">剩余</span>
+      <div className="seat-row2">
+        <span
+          className="seat-stack"
+          data-live={live ? 'true' : 'false'}
+          title={live ? '剩余筹码 = 初始筹码 − 累计投入' : '最近结算筹码'}
+        >
+          {chips(stack)}
+          <span className="unit">剩余</span>
+        </span>
+        <span className="seat-model" title={modelLabel}>
+          {modelLabel}
+        </span>
       </div>
 
-      {status !== 'active' && (
-        <div style={{ marginTop: 6 }}>
-          <span className={`tag status-${status === 'all_in' ? 'allin' : status}`}>
-            {PLAYER_STATUS_LABEL[status]}
-          </span>
-        </div>
-      )}
-
-      {/* 手中同时标注「本轮下注」与「本手累计投入」：街切换会让本轮归零，累计不变，
-          两者相加才是从初始筹码里被扣掉的部分，避免只看剩余产生「筹码没少」的错觉。 */}
+      {/* 移动端网格没有桌沿徽章：本轮/累计仅在此显示（桌面端用 .rim-mark）。 */}
       {live && player && (player.street_bet > 0 || player.committed > 0) && (
         <div className="bet" title="本轮下注 / 本手累计投入">
           <span className="mini-chip" />

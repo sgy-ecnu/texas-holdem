@@ -499,6 +499,9 @@ def frontend():
 
 def go_task(action):
     require((ROOT / "web/dist/index.html").is_file(), "FRONTEND_DIST_MISSING")
+    if action in {"dev", "dev-live"}:
+        # 启动服务前清理 8081 上残留的本项目 server，确保新进程嵌入最新 dist。
+        stop_stale_server()
     env = action_env(action) if action in {"dev", "dev-live", "migrate"} else child_env()
     if action == "build":
         (ROOT / "tmp").mkdir(exist_ok=True)
@@ -536,8 +539,10 @@ def run():
 
     复用 frontend() 与 dev 的启动逻辑（go_task("dev")）：env 仍经 action_env 走
     service_env 的绝对 POKER_CONFIG_FILE 注入与凭据加载，前端失败即中止、不启动服务。
+    前端构建后、启动服务前清理 8081 残留 server（go_task 内亦会调用，幂等）。
     """
     frontend()
+    stop_stale_server()
     return go_task("dev")
 
 
@@ -843,6 +848,146 @@ def exact_option(argv, option):
             values.append(value[len(option) + 1:])
     require(len(values) == 1, "RUNTIME_ARGV_OPTION_MISSING_OR_DUPLICATE")
     return values[0]
+
+
+# --- 应用 server（8081）残留清理：只清理本项目 go run 启动的 server，绝不误杀 ---
+
+STALE_SERVER_PORT = 8081
+
+
+def go_cache():
+    """go run 编译出的临时可执行文件所在缓存目录（GOCACHE），用于核验 server 身份。"""
+    result = captured(["go", "env", "GOCACHE"])
+    require(result.returncode == 0 and result.stdout.strip(), "GO_CACHE_UNAVAILABLE")
+    path = Path(result.stdout.strip())
+    require(path.is_absolute(), "GO_CACHE_NOT_ABSOLUTE")
+    return path.resolve()
+
+
+def listener_pids(port):
+    """返回监听 port 的 PID 列表；无监听返回空列表。"""
+    result = captured(["lsof", "-nP", "-iTCP:" + str(port), "-sTCP:LISTEN", "-t"])
+    pids = []
+    for line in (result.stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        require(re.fullmatch(r"[0-9]+", line), "STALE_SERVER_LSOF_OUTPUT_INVALID")
+        pids.append(int(line))
+    return sorted(set(pids))
+
+
+def project_process_cwd(pid):
+    """核验进程 cwd 为本项目根目录；不是即抛安全错误。"""
+    result = captured(["lsof", "-nP", "-a", "-p", str(pid), "-d", "cwd", "-F", "n"])
+    require(result.returncode == 0, "STALE_SERVER_CWD_INSPECTION_FAILED")
+    require("n" + str(ROOT.resolve()) in result.stdout.splitlines(), "STALE_SERVER_CWD_MISMATCH")
+
+
+def server_listener_identity(pid):
+    """核验 pid 是本项目 go run 编译出的 server 监听进程；任何不匹配都抛 MANUAL 且不杀。
+
+    身份依据（全部来自实时采集，不信任 ps 文本）：进程存在且归属当前用户、原生
+    argv 可读、可执行文件在 GOCACHE 下（go run 产物）、cwd 为本项目根目录、argv 含
+    cmd/server/texas-holdem（编译产物 argv 可仅一个可执行路径）。采集前后启动时间一致。
+    """
+    require(sys.platform == "darwin", "STALE_SERVER_PLATFORM_UNSUPPORTED")
+    before = process_snapshot(pid)
+    require(before is not None, "STALE_SERVER_UNKNOWN_PROCESS_MANUAL")
+    assert before is not None
+    try:
+        executable, argv = process_arguments(pid)
+        exe = canonical_path(executable)
+        cache = go_cache()
+        project_process_cwd(pid)
+        argv_ok = (len(argv) <= 1 or
+                   any(token in " ".join(argv) for token in ("cmd/server", "texas-holdem")))
+    except (SafeError, OSError):
+        raise SafeError("STALE_SERVER_UNKNOWN_PROCESS_MANUAL")
+    require(cache == exe or cache in exe.parents or "go-build" in exe.parts,
+            "STALE_SERVER_UNKNOWN_PROCESS_MANUAL")
+    require(argv_ok, "STALE_SERVER_UNKNOWN_PROCESS_MANUAL")
+    after = process_snapshot(pid)
+    require(before == after, "STALE_SERVER_PID_CHANGED_DURING_INSPECTION")
+    return {"pid": pid, "started": list(before)}
+
+
+def go_run_parent_identity(pid):
+    """若 pid 的父进程为本项目 go run，返回其身份；无法确认一律返回 None（绝不误杀）。"""
+    if sys.platform != "darwin":
+        return None
+    try:
+        result = captured(["ps", "-o", "ppid=", "-p", str(pid)])
+        if result.returncode != 0:
+            return None
+        text = (result.stdout or "").strip()
+        if re.fullmatch(r"[0-9]+", text) is None:
+            return None
+        ppid = int(text)
+        if ppid <= 1:
+            return None
+        before = process_snapshot(ppid)
+        if before is None:
+            return None
+        executable, argv = process_arguments(ppid)
+        exe = canonical_path(executable)
+        joined = " ".join(argv)
+        require(exe.name == "go" and argv[:2] == ["go", "run"] and
+                ("cmd/server" in joined or "texas-holdem" in joined),
+                "STALE_SERVER_PARENT_NOT_GO_RUN")
+        project_process_cwd(ppid)
+        after = process_snapshot(ppid)
+        require(before == after, "STALE_SERVER_PARENT_CHANGED_DURING_INSPECTION")
+        return {"pid": ppid, "started": list(before)}
+    except (SafeError, OSError):
+        return None
+
+
+def _stop_pid(identity):
+    """核验身份未变后 SIGTERM→等待→超时 SIGKILL；PID 复用即中止。"""
+    pid = identity["pid"]
+    current = process_snapshot(pid)
+    if current is None:
+        return
+    require(list(current) == identity["started"], "STALE_SERVER_PID_REUSED_BEFORE_SIGNAL")
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        remaining = process_snapshot(pid)
+        if remaining is None:
+            return
+        require(list(remaining) == identity["started"], "STALE_SERVER_PID_REUSED_AFTER_SIGNAL")
+        time.sleep(0.1)
+    remaining = process_snapshot(pid)
+    require(remaining is not None and list(remaining) == identity["started"],
+            "STALE_SERVER_PID_REUSED_BEFORE_KILL")
+    os.kill(pid, signal.SIGKILL)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and process_snapshot(pid) is not None:
+        time.sleep(0.1)
+    require(process_snapshot(pid) is None, "STALE_SERVER_STOP_TIMEOUT")
+
+
+def stop_stale_server(port=STALE_SERVER_PORT):
+    """启动服务前清理 port 上本项目残留 server：空闲跳过，陌生进程绝不误杀。
+
+    先 SIGTERM 监听子进程，再兜底清理其 go run 父进程。顺序不可颠倒：先杀父进程会让
+    子进程被 reparent 后继续占用端口。仅处理监听该端口的本项目 server，不触碰 runtime
+    隔离的 mysql/redis（那由 start/stop 管理）。
+    """
+    if not port_open(port):
+        print("stale-server: port " + str(port) + " free; nothing to stop")
+        return False
+    pids = listener_pids(port)
+    require(len(pids) == 1, "STALE_SERVER_UNKNOWN_PROCESS_MANUAL")
+    identity = server_listener_identity(pids[0])
+    parent = go_run_parent_identity(pids[0])
+    print("stale-server: stopping project server pid=" + str(identity["pid"]))
+    _stop_pid(identity)
+    if parent is not None:
+        _stop_pid(parent)
+    print("stale-server: port " + str(port) + " cleared")
+    return True
 
 
 def process_state(name):

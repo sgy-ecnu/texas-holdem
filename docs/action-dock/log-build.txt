@@ -1,0 +1,13 @@
+
+> texas-holdem-web@0.1.0 build
+> tsc --noEmit && vite build
+
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 43 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.67 kB │ gzip:  0.45 kB
+dist/assets/index-Deg0C6L6.css   28.99 kB │ gzip:  7.41 kB
+dist/assets/index-Dd6UHxoq.js   268.05 kB │ gzip: 84.55 kB
+✓ built in 1.02s

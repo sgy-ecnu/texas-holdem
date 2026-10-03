@@ -16,6 +16,10 @@ setup 本身可先准备存储，不依赖 dist；重复 setup 不覆盖配置�
 `make run` 是「改完代码一键跑」入口：每次先 `npm ci` + 前端构建生成**最新**
 `web/dist`，再以前台 dev 方式启动服务，避免服务嵌入旧 dist。
 `make dev` 保持快速启动语义，**要求 `web/dist` 已存在**，不重新编译前端。
+两者在启动服务前都会自动检测并**安全清理 8081 上残留的本项目 server 进程**
+（旧 `go run` 留下的监听进程会让新服务绑定 8081 失败、用户只能看到旧进程返回的旧
+嵌入 bundle）；只清理「可执行文件在 Go build cache 且 cwd 指向本项目」的本项目
+server 及其 `go run` 父进程，核验不通过的陌生进程一律拒绝并提示手动处理，绝不误杀。
 
 ```sh
 make setup         # brew services + 独立数据库/用户 + 受保护本地配置
@@ -25,8 +29,8 @@ make stop          # 只停止项目隔离依赖，保留数据，不停止 brew
 make start         # 重启项目隔离依赖
 make build         # npm ci、真实前端构建、Go embedded 二进制
 make migrate       # 显式 Go 数据库迁移（依赖真实前端 dist）
-make run           # 先编译前端生成最新 dist，再启动 Go 服务（一键，前台）
-make dev           # 安全加载配置后启动 Go 服务（快速启动，要求 dist 已存在）
+make run           # 编译前端生成最新 dist，清理 8081 残留 server，再启动（一键，前台）
+make dev           # 安全加载配置、清理 8081 残留 server 后启动（快速启动，要求 dist 已存在）
 make dev-live      # 显式开启本次后端付费开关；可能产生费用，详见下方
 make test-scripts  # 无数据库的脚本安全测试
 make test          # Go 测试（依赖真实 dist）
