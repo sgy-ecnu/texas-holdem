@@ -211,6 +211,39 @@ func TestDecisionFallback(t *testing.T) {
 	}
 }
 
+// TestAIActionAmount 验证 AI commitDecision 路径的 Amount 取数：
+// 翻前 actor=seat0，已投小盲 5，currentBet=10；call 补 5，raise_to 20 追加 15。
+func TestAIActionAmount(t *testing.T) {
+	cases := []struct {
+		name   string
+		action poker.Action
+		want   poker.Chips
+	}{
+		{"call", poker.Action{Kind: "call"}, 5},
+		{"raise_to", poker.Action{Kind: "raise_to", To: 20}, 15},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRepo()
+			seeded(t, r, false)
+			f := &testFactory{d: deciderFunc(func(context.Context, poker.Observation) (agent.Decision, error) {
+				return agent.Decision{Action: tc.action}, nil
+			})}
+			e := engine(t, r, f, Options{AllowPaidModels: true})
+			if _, err := e.Control(context.Background(), "seed", "resume"); err != nil {
+				t.Fatal(err)
+			}
+			eventually(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return len(r.actions) > 0 })
+			r.mu.Lock()
+			a := clone(r.actions[0])
+			r.mu.Unlock()
+			if a.Kind != tc.action.Kind || a.Amount != tc.want {
+				t.Fatalf("AI amount mismatch: %+v want kind=%s amount=%d", a, tc.action.Kind, tc.want)
+			}
+		})
+	}
+}
+
 func TestLiveGateAndBudget(t *testing.T) {
 	t.Run("default_zero_network", func(t *testing.T) {
 		r := newTestRepo()

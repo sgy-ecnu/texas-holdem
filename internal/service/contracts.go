@@ -50,11 +50,14 @@ type HandView struct {
 	WaitingFor *string
 }
 type ActionView struct {
-	HandNo                    uint32
-	Sequence                  uint64
-	Seat                      poker.Seat
-	Kind                      poker.ActionKind
-	To                        poker.Chips
+	HandNo   uint32
+	Sequence uint64
+	Seat     poker.Seat
+	Kind     poker.ActionKind
+	To       poker.Chips
+	// Amount 是本次动作的实际投入额：fold/check 为 0，call 为本次补差跟注额，
+	// raise_to 为相对动作前本街投入的追加额。To 仍为本街累计投入目标值。
+	Amount                    poker.Chips
 	Source                    string
 	ErrorCode                 *string
 	InputTokens, OutputTokens *int64

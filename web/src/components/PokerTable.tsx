@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { chips, STREET_LABEL } from '../format'
 import type { GameDTO, ModelDTO, PlayerDTO, PlayerDTOView } from '../types'
+import { ActionPopover, type ActionHint, type ActionPlacement } from './ActionPopover'
 import { PlayingCard } from './PlayingCard'
 import { Seat } from './Seat'
 
@@ -9,6 +10,10 @@ interface Props {
   models: ModelDTO[]
   // 真人视角才传入；其中 hole_cards 仅属于 player.seat，其他座位绝不补牌。
   player?: PlayerDTOView | null
+  // 按座位索引的临时动作标签（Stage 管理生命周期）；缺省为空，仅展示用。
+  hints?: Map<number, ActionHint>
+  // 单个动作标签动画自然结束回调（供 Stage 的每座位 FIFO 队列推进）。
+  onHintDone?: (seat: number, id: string) => void
 }
 
 // 视觉槽位：以椭圆半径的归一化偏移表示（dx/right、dy/down，范围 [-1,1]）。
@@ -54,8 +59,22 @@ const TEMPLATES: Record<number, Slot[]> = {
   9: [B, L2L, L2U, T4L, T4ML, T4MR, T4R, R2U, R2L],
 }
 
+// 下注徽章（.rim-mark）定位所需固定像素尺寸（与 styles.css 对齐，不随 stage 缩放）：
+// 座位卡 140×58；真人明牌 .hole-open .card 宽 42、高约 58.8，底边在座位卡上方 7px。
+const SEAT_HALF_W = 70
+const SEAT_HALF_H = 29
+// 真人明牌自座位中心向上的突出：29(卡半高) + 7(缝隙) + 58.8(明牌高) ≈ 95，取 96 留余量。
+const OPEN_HOLE_UP = 96
+const MARK_HALF_H = 12
+const MARK_GAP = 6
+// 未测到徽章实际宽度前的保守半宽；测得后按实际 offsetWidth/2 精确定位。
+const MARK_HALF_W_DEFAULT = 90
+// 护栏（.felt）椭圆半径：felt 宽 = 86.8% stage 宽；高 = 89% stage 高 − 2.2% stage 宽
+// （.rail padding 百分比按包含块宽度计算），故半径分别为 0.434W、(0.445H − 0.011W)。
+const FELT_RX_FRAC = 0.434
+
 // 椭圆牌桌：中央公共牌/底池；桌沿徽章；外圈座位卡。
-export function PokerTable({ game, models, player = null }: Props) {
+export function PokerTable({ game, models, player = null, hints, onHintDone }: Props) {
   const hand = game.hand
   // 实测 stage 尺寸，用于把槽位映射到实际像素、避免窄屏溢出。
   const stageRef = useRef<HTMLDivElement | null>(null)
@@ -69,6 +88,23 @@ export function PokerTable({ game, models, player = null }: Props) {
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+
+  // 下注徽章层与各座位徽章实测宽度：宽度决定水平推出距离，读一次真实 offsetWidth 即可确定性收敛。
+  const marksRef = useRef<HTMLDivElement | null>(null)
+  const [markWidths, setMarkWidths] = useState<Map<number, number>>(new Map())
+  useLayoutEffect(() => {
+    const root = marksRef.current
+    if (!root) return
+    const next = new Map<number, number>()
+    root.querySelectorAll<HTMLElement>('.rim-mark').forEach((el) => {
+      const raw = el.dataset.seat
+      if (raw != null) next.set(Number(raw), el.offsetWidth)
+    })
+    setMarkWidths((prev) => {
+      if (prev.size === next.size && [...next].every(([seat, w]) => prev.get(seat) === w)) return prev
+      return next
+    })
+  })
 
   const modelByRef = useMemo(() => {
     const map = new Map<string, ModelDTO>()
@@ -112,23 +148,52 @@ export function PokerTable({ game, models, player = null }: Props) {
   // 槽位 → stage 百分比的坐标；半径依实测尺寸自适应（窄屏自动收，避免溢出/重叠）。
   const geometry = useMemo(() => {
     const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+    const W = stageSize.w
+    const H = stageSize.h
     // 座位卡半宽/半高（含少量余量），用于把卡心推到尽量靠外而不过度溢出 stage。
     const HALF_X = 72
     const HALF_Y = 42
     const MARGIN_X = 22 // 允许的横向溢出像素（落在容器左右内边距内，不产生横向滚动）
     const MARGIN_Y = 4 // 允许的纵向溢出像素（落在牌桌与操作条之间的间隙内）
     const RX =
-      stageSize.w > 0 ? clamp(((stageSize.w / 2 - HALF_X + MARGIN_X) / stageSize.w) * 100, 30, 47) : 46
+      W > 0 ? clamp(((W / 2 - HALF_X + MARGIN_X) / W) * 100, 30, 47) : 46
     const RY =
-      stageSize.h > 0 ? clamp(((stageSize.h / 2 - HALF_Y + MARGIN_Y) / stageSize.h) * 100, 28, 45) : 44
+      H > 0 ? clamp(((H / 2 - HALF_Y + MARGIN_Y) / H) * 100, 28, 45) : 44
     const seatAt = (s: Slot) => ({ cx: 50 + s.dx * RX, cy: 50 + s.dy * RY })
-    // 桌沿徽章（本轮下注）比座位更靠里，落在护栏内侧外围带；底部槽位避开真人底牌再往里收。
-    const rimAt = (s: Slot) => {
+    // 桌沿徽章（本轮下注）定位：从座位中心沿「指向桌心」的轴对齐方向推出，直到
+    // 座位卡（含真人明牌）与徽章沿该轴完全分离，并确保护栏（felt）内侧。
+    // 轴对齐（顶点/底点竖推、侧点横推）保证相邻徽章在另一轴的间距不被缩短、彼此不叠压。
+    const rimAt = (s: Slot, openHole: boolean, halfW: number) => {
+      // 尚未测得 stage 尺寸时的初始占位（首帧后即被实测值覆盖）。
       const t = s.dy > 0.9 ? 0.62 : 0.85
-      return { cx: 50 + s.dx * t * RX, cy: 50 + s.dy * t * RY }
+      if (W <= 0 || H <= 0) return { cx: 50 + s.dx * t * RX, cy: 50 + s.dy * t * RY }
+      const sx = ((50 + s.dx * RX) / 100) * W
+      const sy = ((50 + s.dy * RY) / 100) * H
+      let ax = 0
+      let ay = 0
+      if (s.dy > 0.9) ay = -1 // 正下方 → 向上收
+      else if (s.dy < -0.9) ay = 1 // 正上方 → 向下收
+      else if (Math.abs(s.dx) > Math.abs(s.dy) * 1.25) ax = s.dx < 0 ? 1 : -1 // 偏侧 → 水平收
+      else ay = s.dy < 0 ? 1 : -1 // 偏上/偏下 → 垂直收
+      let obstacle = ax !== 0 ? SEAT_HALF_W : SEAT_HALF_H
+      // 真人明牌在座位卡正上方：仅当向上推出时需额外越过明牌高度。
+      if (openHole && ay < 0) obstacle = Math.max(obstacle, OPEN_HOLE_UP)
+      const badgeHalf = ax !== 0 ? halfW : MARK_HALF_H
+      let dist = obstacle + badgeHalf + MARK_GAP
+      // 护栏内侧约束：把徽章中心（含自身半尺寸余量）推进 felt 椭圆内。
+      const fx = FELT_RX_FRAC * W
+      const fy = 0.445 * H - 0.011 * W
+      if (ax !== 0) {
+        const allowed = fx * Math.sqrt(Math.max(0, 1 - ((sy - H / 2) / fy) ** 2))
+        dist = Math.max(dist, Math.abs(sx - W / 2) - (allowed - halfW))
+      } else {
+        const allowed = fy * Math.sqrt(Math.max(0, 1 - ((sx - W / 2) / fx) ** 2))
+        dist = Math.max(dist, Math.abs(sy - H / 2) - (allowed - MARK_HALF_H))
+      }
+      return { cx: ((sx + ax * dist) / W) * 100, cy: ((sy + ay * dist) / H) * 100 }
     }
     return { seatAt, rimAt }
-  }, [stageSize.w, stageSize.h])
+  }, [stageSize.w, stageSize.h, markWidths])
 
   return (
     <div className="stage" ref={stageRef}>
@@ -160,16 +225,20 @@ export function PokerTable({ game, models, player = null }: Props) {
       </div>
 
       {/* 桌沿层：本街下注徽章（本轮 X + 次要的累计 Y），紧贴所属座位、护栏内侧外围带。 */}
-      <div className="rim-marks" aria-hidden="true">
+      <div className="rim-marks" aria-hidden="true" ref={marksRef}>
         {game.seats.map((seat) => {
           const slot = layout.get(seat.seat)
           const p = playerBySeat.get(seat.seat)
           if (!slot || !p || (p.street_bet <= 0 && p.committed <= 0)) return null
-          const pos = geometry.rimAt(slot)
+          // 本人座位且已发两张明牌时，徽章需越过明牌高度（观战视角无明牌，按普通座位处理）。
+          const openHole = viewerSeat === seat.seat && humanCards.length === 2
+          const halfW = (markWidths.get(seat.seat) ?? MARK_HALF_W_DEFAULT * 2) / 2
+          const pos = geometry.rimAt(slot, openHole, halfW)
           return (
             <div
               className="rim-mark"
               key={`rim-${seat.seat}`}
+              data-seat={seat.seat}
               style={{ left: `${pos.cx}%`, top: `${pos.cy}%` }}
             >
               <span className="mini-chip" />
@@ -208,10 +277,28 @@ export function PokerTable({ game, models, player = null }: Props) {
             playerState !== null &&
             playerState.status !== 'folded' &&
             playerState.status !== 'out'
+          // 座位旁临时动作标签：与 <Seat> 同级（不放进 .seat），避免被 is-dimmed/is-folded 降透明度。
+          const hint = hints?.get(seat.seat)
+          // 底部真人座位＝座位右侧动作；观战与真人视角同规则（按 game.human_seat，不按 viewer）。
+          const isBottomHuman = humanSeat !== null && seat.seat === humanSeat
+          // 底部正中座位：上方是中央保护区（公共牌/底池/街名），改走右侧展开以避免越入保护区
+          // （全 AI 局无真人时同样适用）；左半桌 right bottom / 右半桌 left bottom。
+          const isBottomCenter = slot.dy > 0.9 && Math.abs(slot.dx) < 0.01
+          // 展开方向：底部 → 右侧（left center）；左半桌 → right bottom；右半桌 → left bottom；
+          // 正顶部单座（dx≈0）→ center bottom。只缩放、固定锚点，放大缩回不横向漂移。
+          const place: ActionPlacement =
+            isBottomHuman || isBottomCenter
+              ? 'right'
+              : slot.dx < -0.001
+                ? 'above-left'
+                : slot.dx > 0.001
+                  ? 'above-right'
+                  : 'above-center'
           return (
             <div
-              className={`seat-slot${isActor ? ' is-actor-slot' : ''}`}
+              className={`seat-slot${isActor ? ' is-actor-slot' : ''}${hint ? ' has-hint' : ''}`}
               key={seat.seat}
+              data-seat={seat.seat}
               style={{ left: `${pos.cx}%`, top: `${pos.cy}%` }}
             >
               <Seat
@@ -230,6 +317,14 @@ export function PokerTable({ game, models, player = null }: Props) {
                 flipHole={pos.cx > 55}
                 index={i}
               />
+              {hint && (
+                <ActionPopover
+                  key={hint.id}
+                  hint={hint}
+                  placement={place}
+                  onDone={(id) => onHintDone?.(seat.seat, id)}
+                />
+              )}
             </div>
           )
         })}

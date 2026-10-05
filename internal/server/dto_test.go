@@ -67,6 +67,51 @@ func assertPotSeatJSON(t *testing.T, data []byte, eligible, winners string) {
 	}
 }
 
+func TestActionDTOCarriesAmount(t *testing.T) {
+	cases := []struct {
+		name               string
+		action             service.ActionView
+		wantAmount, wantTo poker.Chips
+	}{
+		{"call", service.ActionView{Kind: "call", To: 0, Amount: 100}, 100, 0},
+		{"raise_to", service.ActionView{Kind: "raise_to", To: 50, Amount: 40}, 40, 50},
+		{"fold", service.ActionView{Kind: "fold", To: 0, Amount: 0}, 0, 0},
+		{"check", service.ActionView{Kind: "check", To: 0, Amount: 0}, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := tc.action
+			b, err := MarshalGame(service.GameView{ID: "g", Status: "created", Mode: "mock", LastAction: &a})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var raw map[string]any
+			if err = json.Unmarshal(b, &raw); err != nil {
+				t.Fatal(err)
+			}
+			la, ok := raw["last_action"].(map[string]any)
+			if !ok {
+				t.Fatalf("last_action missing: %s", b)
+			}
+			if _, ok := la["amount"]; !ok {
+				t.Fatalf("amount key missing: %s", b)
+			}
+			var body struct {
+				LastAction struct {
+					Amount poker.Chips `json:"amount"`
+					To     poker.Chips `json:"to"`
+				} `json:"last_action"`
+			}
+			if err = json.Unmarshal(b, &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.LastAction.Amount != tc.wantAmount || body.LastAction.To != tc.wantTo {
+				t.Fatalf("got amount=%d to=%d want amount=%d to=%d", body.LastAction.Amount, body.LastAction.To, tc.wantAmount, tc.wantTo)
+			}
+		})
+	}
+}
+
 func TestCompletedPotSeatArrays(t *testing.T) {
 	for _, tc := range potSeatJSONCases {
 		t.Run(tc.name, func(t *testing.T) {

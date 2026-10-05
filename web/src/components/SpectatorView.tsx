@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, api } from '../api'
 import {
   AVAILABILITY_LABEL,
@@ -10,6 +10,7 @@ import { useGamePolling, type PollMode } from '../hooks/useGamePolling'
 import type { ActionDTO, Command, GameDTO, HealthDTO, ModelDTO } from '../types'
 import { ActionDock } from './ActionDock'
 import { ActionFeed } from './ActionFeed'
+import { HINT_DURATION_MS, HINT_FALLBACK_MS, hintFromAction, type ActionHint } from './ActionPopover'
 import { HandDetail } from './HandDetail'
 import { PokerTable } from './PokerTable'
 
@@ -18,6 +19,20 @@ interface Props {
   models: ModelDTO[]
   health: HealthDTO | null
   onExit: () => void
+}
+
+// 系统 reduced-motion：动作标签取消缩放，改为静态高对比展示（生命周期 2200ms）。
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  )
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const onChange = () => setReduced(mq.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  return reduced
 }
 
 interface StageProps extends Props {
@@ -49,6 +64,102 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
       return next.length > 60 ? next.slice(next.length - 60) : next
     })
   }, [game?.revision, game?.last_action])
+
+  // ---- 座位旁动作标签（临时提示：React 管生命周期，CSS 管动画） ----
+  // 每座位一个 FIFO 队列：当前动作完整展示 2200ms，新动作按序等待；不同座位并行。
+  // 同一动作 ID 不重复入队；不丢弃、不合并不同动作；跨手不截断已开始的标签。
+  const [hints, setHints] = useState<Map<number, ActionHint>>(() => new Map())
+  // 已观察到的最后一个动作序号，用于「只弹客户端新观察到、严格递增的动作」。
+  const seenActionRef = useRef<{ handNo: number; sequence: number } | null>(null)
+  const activeRef = useRef<Map<number, ActionHint>>(new Map()) // 每座位正在展示的动作
+  const queueRef = useRef<Map<number, ActionHint[]>>(new Map()) // 每座位等待队列
+  const timerRef = useRef<Map<number, number>>(new Map()) // 每座位兜底 timer
+  const pumpRef = useRef<(seat: number) => void>(() => {})
+  const reduced = usePrefersReducedMotion()
+  // 正常动画由 animationend(~2200ms) 清理，此 timer 仅兜底；reduced-motion 无动画，按静态生命周期 2200ms 清理。
+  const fallbackMs = reduced ? HINT_DURATION_MS : HINT_FALLBACK_MS
+
+  // 推进某座位：当前动作到点（或动画结束）后清掉，再从队列取下一个。
+  const advance = useCallback((seat: number, id: string) => {
+    const cur = activeRef.current.get(seat)
+    if (!cur || cur.id !== id) return
+    const t = timerRef.current.get(seat)
+    if (t !== undefined) {
+      window.clearTimeout(t)
+      timerRef.current.delete(seat)
+    }
+    activeRef.current.delete(seat)
+    setHints((prev) => {
+      if (prev.get(seat)?.id !== id) return prev
+      const next = new Map(prev)
+      next.delete(seat)
+      return next
+    })
+    pumpRef.current(seat)
+  }, [])
+
+  // 展示队列头部动作；该座位已有动作展示时不打断（严格 FIFO）。
+  const pump = useCallback(
+    (seat: number) => {
+      if (activeRef.current.has(seat)) return
+      const q = queueRef.current.get(seat)
+      if (!q || q.length === 0) return
+      const hint = q.shift() as ActionHint
+      if (q.length === 0) queueRef.current.delete(seat)
+      activeRef.current.set(seat, hint)
+      setHints((prev) => {
+        const next = new Map(prev)
+        next.set(seat, hint)
+        return next
+      })
+      const timer = window.setTimeout(() => advance(seat, hint.id), fallbackMs)
+      timerRef.current.set(seat, timer)
+    },
+    [advance, fallbackMs],
+  )
+  useEffect(() => {
+    pumpRef.current = pump
+  }, [pump])
+
+  // 入队某动作：同 ID 去重；已有动作展示时排队等待，不被截断。
+  const popHint = useCallback(
+    (hint: ActionHint) => {
+      if (activeRef.current.get(hint.seat)?.id === hint.id) return
+      const q = queueRef.current.get(hint.seat) ?? []
+      if (q.some((h) => h.id === hint.id)) return
+      q.push(hint)
+      queueRef.current.set(hint.seat, q)
+      pump(hint.seat)
+    },
+    [pump],
+  )
+
+  // 观察 last_action：首次（进入/切视角）只作基线不弹；仅 hand_no+sequence 严格递增才弹。
+  // 不依赖 revision，重复轮询同一动作也不会重播。跨手不清空：已开始的标签完成剩余展示后自然推进。
+  const gameId = game?.id
+  const lastAction = game?.last_action ?? null
+  useEffect(() => {
+    if (!gameId || !lastAction) return
+    const seen = seenActionRef.current
+    const { hand_no: handNo, sequence } = lastAction
+    if (seen === null) {
+      seenActionRef.current = { handNo, sequence }
+      return
+    }
+    const forward = handNo > seen.handNo || (handNo === seen.handNo && sequence > seen.sequence)
+    if (!forward) return
+    seenActionRef.current = { handNo, sequence }
+    popHint(hintFromAction(gameId, lastAction))
+  }, [gameId, lastAction, popHint])
+
+  // 卸载时清掉所有未到期 timer，避免在已卸载组件上 setState。
+  useEffect(() => {
+    const timers = timerRef.current
+    return () => {
+      for (const t of timers.values()) window.clearTimeout(t)
+      timers.clear()
+    }
+  }, [])
 
   if (!game) {
     return (
@@ -228,7 +339,7 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
       {/* 牌桌居中；操作条紧贴牌桌正下方，一屏内无需下滑即可操作。 */}
       <div className="play-layout">
         <div className={`table-wrap${stale ? ' is-stale' : ''}`}>
-          <PokerTable game={game} models={models} player={game.player} />
+          <PokerTable game={game} models={models} player={game.player} hints={hints} />
           {stale && <div className="stale-tag">画面已过期 · 等待状态确认</div>}
         </div>
 

@@ -44,6 +44,7 @@ type ActionDTO struct {
 	Seat         poker.Seat       `json:"seat"`
 	Kind         poker.ActionKind `json:"kind"`
 	To           poker.Chips      `json:"to"`
+	Amount       poker.Chips      `json:"amount"`
 	Source       string           `json:"source"`
 	ErrorCode    *string          `json:"error_code"`
 	InputTokens  *int64           `json:"input_tokens"`
@@ -192,7 +193,7 @@ func Game(v service.GameView) GameDTO {
 	}
 	if v.LastAction != nil {
 		a := v.LastAction
-		d.LastAction = &ActionDTO{HandNo: a.HandNo, Sequence: a.Sequence, Seat: a.Seat, Kind: a.Kind, To: a.To, Source: a.Source, ErrorCode: a.ErrorCode, InputTokens: a.InputTokens, OutputTokens: a.OutputTokens}
+		d.LastAction = &ActionDTO{HandNo: a.HandNo, Sequence: a.Sequence, Seat: a.Seat, Kind: a.Kind, To: a.To, Amount: a.Amount, Source: a.Source, ErrorCode: a.ErrorCode, InputTokens: a.InputTokens, OutputTokens: a.OutputTokens}
 	}
 	return d
 }

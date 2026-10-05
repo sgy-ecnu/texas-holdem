@@ -1,0 +1,37 @@
+
+Running 28 tests using 1 worker
+
+[dock] desktop height=139
+  ✓   1 [chromium] › fixture/tests/action-dock.spec.ts:41:1 › 桌面 · 三行紧凑结构、总高下降、无重复信息、按钮≥40px (3.5s)
+[dock] thinking height=54
+  ✓   2 [chromium] › fixture/tests/action-dock.spec.ts:94:1 › 桌面 · 非我行动（思考中）时操作区仅剩状态行 (3.5s)
+[dock] mobile height=202
+  ✓   3 [chromium] › fixture/tests/action-dock.spec.ts:109:1 › 移动端 390 · 各行堆叠、触控目标≥40px、不溢出 (3.2s)
+  ✓   4 [chromium] › fixture/tests/action-popover-scale.spec.ts:150:1 › 桌面：四种动作统一 scale 1.8 / 2200ms / 四色 (6.1s)
+  ✓   5 [chromium] › fixture/tests/action-popover-scale.spec.ts:216:1 › 桌面：精确时间轴（80/320/620/920/1980ms） (2.6s)
+  ✓   6 [chromium] › fixture/tests/action-popover-scale.spec.ts:247:1 › 桌面：展开方向 transform-origin（左半/右半/顶部/真人） (6.0s)
+  ✓   7 [chromium] › fixture/tests/action-popover-scale.spec.ts:288:1 › 移动端 390：scale 仍 1.8、不横向溢出 (2.3s)
+  ✓   8 [chromium] › fixture/tests/action-popover-scale.spec.ts:311:1 › reduced-motion：静态高对比展示约 2200ms (4.5s)
+  ✓   9 [chromium] › fixture/tests/action-popover.spec.ts:131:1 › 去重触发 + 同座位 FIFO 不截断 + 不同座位并存 + 跨手不清 + 弃牌不变暗 + 标签定位 (11.7s)
+  ✓  10 [chromium] › fixture/tests/action-popover.spec.ts:218:1 › reduced-motion：标签降级为静态可见，随后由 timer 移除 (5.4s)
+  ✓  11 [chromium] › fixture/tests/action-popover.spec.ts:247:1 › 人数模板 2/6/9（全 AI）：标签不压中央、不互相重叠、无横向溢出 (7.3s)
+  ✓  12 [chromium] › fixture/tests/action-popover.spec.ts:294:1 › 移动端 390：标签落在预留行、不压 .bet、不溢出 (3.6s)
+  ✓  13 [chromium] › fixture/tests/human-player.spec.ts:19:1 › 全 AI 创建走公共观战，不出现真人行动面板 (337ms)
+  ✓  14 [chromium] › fixture/tests/human-player.spec.ts:31:1 › 真人座位：配置页隐藏模型下拉，创建后进入真人视角 (3.0s)
+  ✓  15 [chromium] › fixture/tests/human-player.spec.ts:44:1 › 轮到真人：座位光圈与「轮到我」、底部倒计时进度条与操作按钮组 (3.2s)
+  ✓  16 [chromium] › fixture/tests/human-player.spec.ts:76:1 › AI 轮转：底部显示「思考中…」与不确定进度，行动历史高亮新动作 (3.2s)
+  ✓  17 [chromium] › fixture/tests/human-player.spec.ts:96:1 › 无 Cookie 浏览器：人类牌局仅公共观战，看不到真人底牌与行动面板 (236ms)
+  ✓  18 [chromium] › fixture/tests/human-player.spec.ts:123:1 › 移动端 390 宽：轮转提示与底部操作区可点无遮挡 (3.1s)
+  ✓  19 [chromium] › fixture/tests/quick-bet-keys.spec.ts:26:1 › 快捷注：六个比例按钮渲染，目标值按基准池 clamp，点击填入输入框 (3.2s)
+  ✓  20 [chromium] › fixture/tests/quick-bet-keys.spec.ts:57:1 › 快捷键 F：直接弃牌并收起操作面板 (3.1s)
+  ✓  21 [chromium] › fixture/tests/quick-bet-keys.spec.ts:66:1 › 快捷键 R 聚焦加注输入框；输入框聚焦时 F/C/K 不误触 (3.1s)
+  ✓  22 [chromium] › fixture/tests/quick-bet-keys.spec.ts:87:1 › 键盘 R + 输入 + 回车：提交加注动作 (3.2s)
+  ✓  23 [chromium] › fixture/tests/quick-bet-keys.spec.ts:100:1 › 移动端 390 宽：快捷注按钮可见且不超出视口 (3.1s)
+  ✓  24 [chromium] › fixture/tests/table-layout.spec.ts:94:1 › 人数模板 2-9（真人局）：不重叠、不侵入中央、真人底部居中、两行固定 (26.1s)
+[layout] stage=1334x734 felt=1158x624
+  ✓  25 [chromium] › fixture/tests/table-layout.spec.ts:137:1 › 桌面 · 真人 9 座：底部居中、中央清爽、座位卡两行、牌桌更大 (3.5s)
+  ✓  26 [chromium] › fixture/tests/table-layout.spec.ts:163:1 › 桌面 · 全 AI 9 座观战：环绕不重叠、中央清爽 (695ms)
+  ✓  27 [chromium] › fixture/tests/table-layout.spec.ts:177:1 › 桌沿徽章：本街下注（本轮 + 累计）落在护栏内侧，不压中央 (1.9s)
+  ✓  28 [chromium] › fixture/tests/table-layout.spec.ts:210:1 › 移动端 390：座位可点、不溢出、操作条在视口内 (3.2s)
+
+  28 passed (2.1m)

@@ -194,6 +194,29 @@ func (e *Engine) step() {
 	go e.decide(ctx, d, obs, r.View.ID, r.View.Revision, id)
 }
 
+// actionAmount 计算动作本次的实际投入额，仅依据动作前的权威状态：
+// fold/check 为 0；call 为本次补差跟注额（Legal 的 CallAmount）；
+// raise_to 为本次追加额（action.To 减去该座位动作前本街 StreetBet）。
+// 不改变 poker 引擎 Apply/Legal 语义。
+func actionAmount(s poker.State, seat poker.Seat, action poker.Action) poker.Chips {
+	switch action.Kind {
+	case "call":
+		if l, err := poker.Legal(s, seat); err == nil {
+			return l.CallAmount
+		}
+		return 0
+	case "raise_to":
+		for _, p := range poker.Public(s).Players {
+			if p.Seat == seat {
+				return action.To - p.StreetBet
+			}
+		}
+		return 0
+	default:
+		return 0
+	}
+}
+
 // submit 在锁内以统一链路提交一个（已确认合法的）动作：解码快照、Apply、
 // 原子提交 revision/快照/动作/必要结算，并清除真人等待点。Apply 失败返回
 // ErrIllegalAction 且不改变任何状态、不重置时限。
@@ -214,7 +237,7 @@ func (e *Engine) submit(ctx context.Context, r *Record, old uint64, seat poker.S
 	if r.View.Hand != nil {
 		r.View.Hand.WaitingFor = nil
 	}
-	a := ActionView{HandNo: r.View.Hand.Number, Sequence: r.Sequence, Seat: seat, Kind: action.Kind, To: action.To, Source: source, ErrorCode: code}
+	a := ActionView{HandNo: r.View.Hand.Number, Sequence: r.Sequence, Seat: seat, Kind: action.Kind, To: action.To, Amount: actionAmount(s, seat, action), Source: source, ErrorCode: code}
 	r.View.LastAction = &a
 	r.View.Hand.State = poker.Public(next)
 	r.Snapshot, err = poker.EncodeState(next)
@@ -328,7 +351,7 @@ func (e *Engine) commitDecision(result *decisionResult, obs poker.Observation, g
 	r.Sequence++
 	r.View.Revision++
 	r.RequestID = ""
-	a := ActionView{HandNo: r.View.Hand.Number, Sequence: r.Sequence, Seat: obs.Self, Kind: action.Kind, To: action.To, Source: source, ErrorCode: code, InputTokens: result.decision.InputTokens, OutputTokens: result.decision.OutputTokens}
+	a := ActionView{HandNo: r.View.Hand.Number, Sequence: r.Sequence, Seat: obs.Self, Kind: action.Kind, To: action.To, Amount: actionAmount(s, obs.Self, action), Source: source, ErrorCode: code, InputTokens: result.decision.InputTokens, OutputTokens: result.decision.OutputTokens}
 	r.View.LastAction = &a
 	r.View.Hand.State = poker.Public(next)
 	r.Snapshot, err = poker.EncodeState(next)

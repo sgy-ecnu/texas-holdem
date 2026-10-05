@@ -254,6 +254,86 @@ func TestHumanActions(t *testing.T) {
 	}
 }
 
+// ---------- 场景：动作实际投入金额 ----------
+
+// TestActionAmount 直接验证取数函数：call 为补差跟注额，raise_to 为追加额，
+// fold/check 为 0。翻前按钮=1、SB=5、BB=10，AI(seat1) 加注到 30 后轮到真人(seat0)：
+// 真人已投 10，跟注补 20；最小加注到 50，追加 40。
+func TestActionAmount(t *testing.T) {
+	s := humanState(t, &poker.Action{Kind: "raise_to", To: 30})
+	cases := []struct {
+		name   string
+		action poker.Action
+		want   poker.Chips
+	}{
+		{"fold", poker.Action{Kind: "fold"}, 0},
+		{"check", poker.Action{Kind: "check"}, 0},
+		{"call", poker.Action{Kind: "call"}, 20},
+		{"raise_to", poker.Action{Kind: "raise_to", To: 50}, 40},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := actionAmount(s, 0, tc.action); got != tc.want {
+				t.Fatalf("actionAmount(%s) got %d want %d", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHumanActionAmount 走 Act→submit 真实链路，验证真人四种动作落库的 Amount 与
+// To 语义：fold/check amount=0；call amount=跟注额且 To=0；raise_to amount=追加额、To=目标值。
+func TestHumanActionAmount(t *testing.T) {
+	cases := []struct {
+		name       string
+		aiAction   *poker.Action
+		action     func(t *testing.T, s poker.State) poker.Action
+		wantAmount poker.Chips
+		wantTo     poker.Chips
+	}{
+		{"check", &poker.Action{Kind: "call"}, func(*testing.T, poker.State) poker.Action { return poker.Action{Kind: "check"} }, 0, 0},
+		{"fold", &poker.Action{Kind: "raise_to", To: 30}, func(*testing.T, poker.State) poker.Action { return poker.Action{Kind: "fold"} }, 0, 0},
+		{"call", &poker.Action{Kind: "raise_to", To: 30}, func(*testing.T, poker.State) poker.Action { return poker.Action{Kind: "call"} }, 20, 0},
+		{"raise_to", &poker.Action{Kind: "raise_to", To: 30}, func(t *testing.T, s poker.State) poker.Action {
+			l, err := poker.Legal(s, 0)
+			if err != nil || !l.CanRaise {
+				t.Fatalf("expected raise right: %v %+v", err, l)
+			}
+			return poker.Action{Kind: "raise_to", To: l.MinRaiseTo}
+		}, 40, 50},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRepo()
+			s := humanState(t, tc.aiAction)
+			deadline := time.Now().Add(time.Minute)
+			seedHuman(t, r, "created", s, &HumanWait{HandNo: 1, Seat: 0, Deadline: &deadline}, time.Minute)
+			e := engine(t, r, nil, Options{HumanActionTimeout: time.Minute})
+			if _, err := e.Control(context.Background(), "human-game", "start"); err != nil {
+				t.Fatal(err)
+			}
+			rec := recordOf(t, r, "human-game")
+			ha := HumanAction{ExpectedRevision: rec.View.Revision, Action: tc.action(t, s)}
+			if _, err := e.Act(context.Background(), "human-game", sessionHash(0xAB), ha); err != nil {
+				t.Fatalf("action %s rejected: %v", tc.name, err)
+			}
+			r.mu.Lock()
+			var human []ActionView
+			for _, a := range r.actions {
+				if a.Source == "human" {
+					human = append(human, a)
+				}
+			}
+			r.mu.Unlock()
+			if len(human) != 1 {
+				t.Fatalf("want exactly 1 human action, got %d", len(human))
+			}
+			if human[0].Amount != tc.wantAmount || human[0].To != tc.wantTo {
+				t.Fatalf("amount/to mismatch: %+v want amount=%d to=%d", human[0], tc.wantAmount, tc.wantTo)
+			}
+		})
+	}
+}
+
 // ---------- 场景：非法动作不推进、不重置时限 ----------
 
 func TestHumanIllegalAction(t *testing.T) {

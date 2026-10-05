@@ -79,6 +79,9 @@ export interface ActionDTO {
   seat: number
   kind: ActionKind
   to: number
+  // 本次动作的实际投入额：fold/check 为 0，call 为本次补差跟注额，raise_to 为追加额。
+  // 前端仅用于座位旁动作标签的「跟注 {amount}」文案，展示语义。
+  amount: number
   source: string
   error_code: string | null
   input_tokens: number | null

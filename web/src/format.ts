@@ -1,4 +1,5 @@
 import type {
+  ActionDTO,
   ActionKind,
   Availability,
   PlayerStatus,
@@ -100,6 +101,22 @@ export function errorCodeLabel(code: string): string {
 // 筹码只做展示格式化，不改变数值语义。
 export function chips(n: number): string {
   return new Intl.NumberFormat('zh-CN').format(n)
+}
+
+// 座位旁临时动作标签的文案：
+//   fold→「弃牌」、check→「过牌」、call→「跟注 {amount}」、raise_to→「加注到 {to}」。
+// call 用本次实际投入额 amount；raise_to 用本街累计目标值 to。数值缺失时按 0 兜底，不显示 NaN。
+export function actionPopoverLabel(action: ActionDTO): string {
+  switch (action.kind) {
+    case 'fold':
+      return '弃牌'
+    case 'check':
+      return '过牌'
+    case 'call':
+      return `跟注 ${chips(action.amount ?? 0)}`
+    case 'raise_to':
+      return `加注到 ${chips(action.to)}`
+  }
 }
 
 export function isTerminal(status: string): boolean {

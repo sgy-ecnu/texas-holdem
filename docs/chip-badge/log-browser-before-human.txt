@@ -1,0 +1,44 @@
+
+Running 1 test using 1 worker
+
+EVIDENCE human_9: {"marks":3,"seats":9,"mark_vs_row1":[[0,3],[2,5]],"mark_vs_hole":[],"mark_vs_open_cards":[],"mark_vs_mark":[],"mark_vs_board":[],"mark_vs_pot":[],"marks_inside_felt":true,"nearest_seat_dist_px":[91,112,91],"stage":{"w":1334,"h":734},"felt":{"w":1158,"h":624},"mark_boxes":[{"x":1223,"y":642,"w":117,"h":23},{"x":703,"y":728,"w":131,"h":23},{"x":189,"y":641,"w":131,"h":23}],"seat_centers":[{"x":935,"y":194},{"x":1163,"y":227},{"x":1323,"y":385},{"x":1373,"y":661},{"x":768,"y":852},{"x":163,"y":661},{"x":213,"y":385},{"x":373,"y":227},{"x":601,"y":194}]}
+  ✘  1 [chromium] › chip-badge/chip_badge.spec.ts:206:1 › chip_badge_human · 真人 9 座：徽章不遮挡真人明牌与首行 (3.3s)
+Testing stopped early after 1 maximum allowed failures.
+
+
+  1) [chromium] › chip-badge/chip_badge.spec.ts:206:1 › chip_badge_human · 真人 9 座：徽章不遮挡真人明牌与首行 ─────
+
+    Error: human_9: 徽章遮挡座位卡第一行
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  -  1
+    + Received  + 10
+
+    - Array []
+    + Array [
+    +   Array [
+    +     0,
+    +     3,
+    +   ],
+    +   Array [
+    +     2,
+    +     5,
+    +   ],
+    + ]
+
+      175 |   record(label, facts)
+      176 |
+    > 177 |   expect(markVsRow1, `${label}: 徽章遮挡座位卡第一行`).toEqual([])
+          |                                              ^
+      178 |   expect(markVsHole, `${label}: 徽章遮挡底牌占位/明牌容器`).toEqual([])
+      179 |   expect(markVsOpen, `${label}: 徽章遮挡真人明牌`).toEqual([])
+      180 |   expect(markVsMark, `${label}: 徽章彼此叠压`).toEqual([])
+        at measureAndAssert (/Users/gaosper/Documents/mycode/texas-holdem/tests/e2e/browser/chip-badge/chip_badge.spec.ts:177:46)
+        at /Users/gaosper/Documents/mycode/texas-holdem/tests/e2e/browser/chip-badge/chip_badge.spec.ts:219:17
+
+    Error Context: ../../../../../../../../tmp/chip-badge-artifacts/chip_badge-chip-badge-human-·-真人-9-座：徽章不遮挡真人明牌与首行-chromium/error-context.md
+
+  1 failed
+    [chromium] › chip-badge/chip_badge.spec.ts:206:1 › chip_badge_human · 真人 9 座：徽章不遮挡真人明牌与首行 ──────
+  1 error was not a part of any test, see above for details

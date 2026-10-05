@@ -1,0 +1,44 @@
+
+Running 1 test using 1 worker
+
+EVIDENCE all_ai_9: {"marks":9,"seats":9,"mark_vs_row1":[[1,1],[8,8]],"mark_vs_hole":[],"mark_vs_open_cards":[],"mark_vs_mark":[],"mark_vs_board":[],"mark_vs_pot":[],"marks_inside_felt":true,"nearest_seat_dist_px":[112,91,89,82,66,66,82,89,91],"stage":{"w":1334,"h":734},"felt":{"w":1158,"h":624},"mark_boxes":[{"x":703,"y":728,"w":130,"h":23},{"x":193,"y":640,"w":121,"h":24},{"x":229,"y":406,"w":134,"h":24},{"x":365,"y":271,"w":134,"h":24},{"x":560,"y":243,"w":134,"h":24},{"x":843,"y":243,"w":134,"h":24},{"x":1037,"y":271,"w":134,"h":24},{"x":1173,"y":406,"w":134,"h":24},{"x":1215,"y":640,"w":134,"h":24}],"seat_centers":[{"x":768,"y":852},{"x":163,"y":661},{"x":213,"y":385},{"x":373,"y":227},{"x":601,"y":194},{"x":935,"y":194},{"x":1163,"y":227},{"x":1323,"y":385},{"x":1373,"y":661}]}
+  ✘  1 [chromium] › chip-badge/chip_badge.spec.ts:191:1 › chip_badge_all_ai · 全 AI 9 座：徽章不遮挡底牌/首行，落护栏内侧 (10.7s)
+Testing stopped early after 1 maximum allowed failures.
+
+
+  1) [chromium] › chip-badge/chip_badge.spec.ts:191:1 › chip_badge_all_ai · 全 AI 9 座：徽章不遮挡底牌/首行，落护栏内侧 
+
+    Error: all_ai_9: 徽章遮挡座位卡第一行
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  -  1
+    + Received  + 10
+
+    - Array []
+    + Array [
+    +   Array [
+    +     1,
+    +     1,
+    +   ],
+    +   Array [
+    +     8,
+    +     8,
+    +   ],
+    + ]
+
+      175 |   record(label, facts)
+      176 |
+    > 177 |   expect(markVsRow1, `${label}: 徽章遮挡座位卡第一行`).toEqual([])
+          |                                              ^
+      178 |   expect(markVsHole, `${label}: 徽章遮挡底牌占位/明牌容器`).toEqual([])
+      179 |   expect(markVsOpen, `${label}: 徽章遮挡真人明牌`).toEqual([])
+      180 |   expect(markVsMark, `${label}: 徽章彼此叠压`).toEqual([])
+        at measureAndAssert (/Users/gaosper/Documents/mycode/texas-holdem/tests/e2e/browser/chip-badge/chip_badge.spec.ts:177:46)
+        at /Users/gaosper/Documents/mycode/texas-holdem/tests/e2e/browser/chip-badge/chip_badge.spec.ts:202:3
+
+    Error Context: ../../../../../../../../tmp/chip-badge-artifacts/chip_badge-chip-badge-all-ai-·-全-AI-9-座：徽章不遮挡底牌-首行，落护栏内侧-chromium/error-context.md
+
+  1 failed
+    [chromium] › chip-badge/chip_badge.spec.ts:191:1 › chip_badge_all_ai · 全 AI 9 座：徽章不遮挡底牌/首行，落护栏内侧 
+  1 error was not a part of any test, see above for details
