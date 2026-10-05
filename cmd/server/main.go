@@ -82,7 +82,7 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("MODEL_FACTORY_INVALID")
 	}
-	manager, err := service.New(context.Background(), repo, factory, service.Options{AllowPaidModels: c.AllowPaidModels, MaxLiveCalls: c.MaxLiveCalls, DecisionTimeout: c.DecisionTimeout, HumanActionTimeout: c.HumanActionTimeout, AITurnDelay: c.AITurnDelay})
+	manager, err := service.New(context.Background(), repo, factory, service.Options{AllowPaidModels: c.AllowPaidModels, MaxLiveCalls: c.MaxLiveCalls, DecisionTimeout: c.DecisionTimeout, HumanActionTimeout: c.HumanActionTimeout, AITurnDelay: c.AITurnDelay, HandIntervalShowdown: c.HandIntervalShowdown, HandIntervalUncontested: c.HandIntervalUncontested})
 	if err != nil {
 		return err
 	}

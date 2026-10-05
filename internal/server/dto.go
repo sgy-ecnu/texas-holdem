@@ -107,17 +107,26 @@ type PotDTO struct {
 	Winners  []int       `json:"winners"`
 	Payouts  []AmountDTO `json:"payouts"`
 }
+
+// ShowdownDTO 是摊牌结算的每座位展示：牌型中文名与最佳五张牌。
+// 仅 reason=="showdown" 时非空；弃牌结束（uncontested）不产生牌型。
+type ShowdownDTO struct {
+	Seat     poker.Seat   `json:"seat"`
+	HandRank string       `json:"hand_rank"`
+	BestFive []poker.Card `json:"best_five"`
+}
 type CompletedHandDTO struct {
-	GameID      string       `json:"game_id"`
-	HandNo      uint32       `json:"hand_no"`
-	Reason      string       `json:"reason"`
-	Button      poker.Seat   `json:"button"`
-	Board       []poker.Card `json:"board"`
-	HoleCards   []HoleDTO    `json:"hole_cards"`
-	Refunds     []AmountDTO  `json:"refunds"`
-	Payouts     []AmountDTO  `json:"payouts"`
-	Pots        []PotDTO     `json:"pots"`
-	FinalStacks []StackDTO   `json:"final_stacks"`
+	GameID      string        `json:"game_id"`
+	HandNo      uint32        `json:"hand_no"`
+	Reason      string        `json:"reason"`
+	Button      poker.Seat    `json:"button"`
+	Board       []poker.Card  `json:"board"`
+	HoleCards   []HoleDTO     `json:"hole_cards"`
+	Refunds     []AmountDTO   `json:"refunds"`
+	Payouts     []AmountDTO   `json:"payouts"`
+	Pots        []PotDTO      `json:"pots"`
+	FinalStacks []StackDTO    `json:"final_stacks"`
+	Showdown    []ShowdownDTO `json:"showdown"`
 }
 type ModelDTO struct {
 	Ref          string             `json:"ref"`
@@ -232,11 +241,15 @@ func seatNumbers(seats []poker.Seat) []int {
 
 func Completed(v service.CompletedHandView) CompletedHandDTO {
 	r := v.Result
-	d := CompletedHandDTO{GameID: v.GameID, HandNo: v.HandNo, Reason: r.Reason, Button: v.Button, Board: append([]poker.Card{}, v.Board...), HoleCards: make([]HoleDTO, 0, len(r.HoleCards)), Refunds: amounts(r.Refunds), Payouts: amounts(r.Payouts), Pots: make([]PotDTO, 0, len(r.Pots)), FinalStacks: make([]StackDTO, 0, len(r.FinalStack))}
+	d := CompletedHandDTO{GameID: v.GameID, HandNo: v.HandNo, Reason: r.Reason, Button: v.Button, Board: append([]poker.Card{}, v.Board...), HoleCards: make([]HoleDTO, 0, len(r.HoleCards)), Refunds: amounts(r.Refunds), Payouts: amounts(r.Payouts), Pots: make([]PotDTO, 0, len(r.Pots)), FinalStacks: make([]StackDTO, 0, len(r.FinalStack)), Showdown: make([]ShowdownDTO, 0, len(r.HandRanks))}
 	for seat, cards := range r.HoleCards {
 		d.HoleCards = append(d.HoleCards, HoleDTO{Seat: seat, Cards: cards})
 	}
 	sort.Slice(d.HoleCards, func(i, j int) bool { return d.HoleCards[i].Seat < d.HoleCards[j].Seat })
+	for seat, rank := range r.HandRanks {
+		d.Showdown = append(d.Showdown, ShowdownDTO{Seat: seat, HandRank: rank, BestFive: append([]poker.Card{}, r.BestFive[seat]...)})
+	}
+	sort.Slice(d.Showdown, func(i, j int) bool { return d.Showdown[i].Seat < d.Showdown[j].Seat })
 	for _, p := range r.Pots {
 		d.Pots = append(d.Pots, PotDTO{Amount: p.Amount, Eligible: seatNumbers(p.Eligible), Winners: seatNumbers(p.Winners), Payouts: amounts(p.Payouts)})
 	}

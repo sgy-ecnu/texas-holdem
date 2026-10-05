@@ -130,6 +130,13 @@ export interface PotDTO {
   payouts: AmountDTO[]
 }
 
+// 摊牌结算的每座位展示：牌型中文名与最佳五张牌；仅 reason=="showdown" 时非空。
+export interface ShowdownDTO {
+  seat: number
+  hand_rank: string
+  best_five: string[]
+}
+
 export interface CompletedHandDTO {
   game_id: string
   hand_no: number
@@ -141,6 +148,7 @@ export interface CompletedHandDTO {
   payouts: AmountDTO[]
   pots: PotDTO[]
   final_stacks: StackDTO[]
+  showdown: ShowdownDTO[]
 }
 
 export interface ModelDTO {

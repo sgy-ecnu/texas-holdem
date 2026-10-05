@@ -37,7 +37,7 @@ var envKeys = []string{
 	"POKER_FRONTEND_PORT", "POKER_MYSQL_DSN", "POKER_REDIS_ADDR", "POKER_REDIS_PASSWORD",
 	"POKER_REDIS_DB", "POKER_CATALOG_PATH", "POKER_ALLOW_PAID_MODELS", "POKER_MAX_LIVE_CALLS",
 	"POKER_DECISION_TIMEOUT", "POKER_MAX_OUTPUT_TOKENS", "POKER_HUMAN_ACTION_TIMEOUT",
-	"POKER_AI_TURN_DELAY",
+	"POKER_AI_TURN_DELAY", "POKER_HAND_INTERVAL_SHOWDOWN_SEC", "POKER_HAND_INTERVAL_UNCONTESTED_SEC",
 }
 
 func isolateEnv(t *testing.T) {
@@ -369,6 +369,57 @@ func TestAITurnDelayConfig(t *testing.T) {
 			t.Setenv("POKER_AI_TURN_DELAY", v)
 			if _, err := Load(); err == nil || err.Error() != "CONFIG_INVALID" {
 				t.Fatalf("env ai_turn_delay %q got %v want CONFIG_INVALID", v, err)
+			}
+		}
+	})
+}
+
+func TestHandIntervalConfig(t *testing.T) {
+	t.Run("default_12s_8s", func(t *testing.T) {
+		isolateEnv(t)
+		writeBase(t, validBase)
+		t.Setenv("POKER_MYSQL_DSN", "fixture-dsn")
+		c, err := Load()
+		if err != nil || c.HandIntervalShowdown != 12*time.Second || c.HandIntervalUncontested != 8*time.Second {
+			t.Fatalf("default hand interval got showdown=%v uncontested=%v err=%v", c.HandIntervalShowdown, c.HandIntervalUncontested, err)
+		}
+	})
+	t.Run("yaml_and_env_override", func(t *testing.T) {
+		isolateEnv(t)
+		writeBase(t, validBase+"gameplay:\n  hand_interval_showdown_sec: 20\n  hand_interval_uncontested_sec: 5\n")
+		t.Setenv("POKER_MYSQL_DSN", "fixture-dsn")
+		c, err := Load()
+		if err != nil || c.HandIntervalShowdown != 20*time.Second || c.HandIntervalUncontested != 5*time.Second {
+			t.Fatalf("yaml hand interval got showdown=%v uncontested=%v err=%v", c.HandIntervalShowdown, c.HandIntervalUncontested, err)
+		}
+		t.Setenv("POKER_HAND_INTERVAL_SHOWDOWN_SEC", "7")
+		c, err = Load()
+		if err != nil || c.HandIntervalShowdown != 7*time.Second {
+			t.Fatalf("env hand interval got showdown=%v err=%v", c.HandIntervalShowdown, err)
+		}
+	})
+	t.Run("explicit_zero_negative_and_bad_type_rejected", func(t *testing.T) {
+		for _, body := range []string{
+			"gameplay:\n  hand_interval_showdown_sec: 0\n",
+			"gameplay:\n  hand_interval_showdown_sec: -1\n",
+			"gameplay:\n  hand_interval_showdown_sec:\n",
+			"gameplay:\n  hand_interval_showdown_sec: 1.5\n",
+			"gameplay:\n  hand_interval_uncontested_sec: 0\n",
+		} {
+			isolateEnv(t)
+			writeBase(t, validBase+body)
+			t.Setenv("POKER_MYSQL_DSN", "fixture-dsn")
+			if _, err := Load(); err == nil || err.Error() != "CONFIG_INVALID" {
+				t.Fatalf("bad hand interval %q got %v want CONFIG_INVALID", body, err)
+			}
+		}
+		for _, v := range []string{"0", "-3", "abc"} {
+			isolateEnv(t)
+			writeBase(t, validBase)
+			t.Setenv("POKER_MYSQL_DSN", "fixture-dsn")
+			t.Setenv("POKER_HAND_INTERVAL_UNCONTESTED_SEC", v)
+			if _, err := Load(); err == nil || err.Error() != "CONFIG_INVALID" {
+				t.Fatalf("env hand interval %q got %v want CONFIG_INVALID", v, err)
 			}
 		}
 	})

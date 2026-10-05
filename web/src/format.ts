@@ -65,6 +65,18 @@ export const PROVIDER_LABEL: Record<ProviderKind, string> = {
   anthropic: 'Anthropic',
 }
 
+// 座位卡模型短名：只对已知模型做少量显式映射，不做任何通用字符串猜测/截断。
+// key = ModelDTO.ref（形如 deepseek/deepseek-v4-pro）；完整 label 仍保留在座位卡 title。
+// 未收录的模型返回 null，座位卡直接省略模型名（降级为只保留 title），避免再次挤坏第一行。
+export const MODEL_SHORT_LABEL: Record<string, string> = {
+  'deepseek/deepseek-v4-pro': 'V4 Pro',
+}
+
+export function modelShortLabel(modelRef: string | null | undefined): string | null {
+  if (!modelRef) return null
+  return MODEL_SHORT_LABEL[modelRef] ?? null
+}
+
 export const ERROR_CODE_LABEL: Record<string, string> = {
   MODEL_TIMEOUT: '模型超时',
   MODEL_AUTH_FAILED: '模型认证失败',
@@ -83,6 +95,17 @@ export const ERROR_CODE_LABEL: Record<string, string> = {
 export const HAND_REASON_LABEL: Record<string, string> = {
   showdown: '摊牌比牌',
   uncontested: '无人跟注',
+}
+
+// 手间结算标题：结算条与街轨道第五节点统一口径。
+export const SETTLEMENT_TITLE: Record<string, string> = {
+  showdown: '摊牌结算',
+  uncontested: '弃牌结算',
+}
+
+// 底池命名：第一池是主池，之后依次为边池 1、2…（不是「边池1」指代主池）。
+export function potName(index: number): string {
+  return index === 0 ? '主池' : `边池${index}`
 }
 
 export function statusLabel(status: string): string {

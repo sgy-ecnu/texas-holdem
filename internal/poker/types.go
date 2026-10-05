@@ -70,6 +70,11 @@ type HandResult struct {
 	Payouts    map[Seat]Chips
 	HoleCards  map[Seat][2]Card
 	FinalStack map[Seat]Chips
+	// HandRanks 是每个实际参与摊牌玩家的牌型中文名（高牌..同花顺）；
+	// BestFive 是对应的最佳五张牌。仅 reason=="showdown" 时非空，且只覆盖
+	// active/all_in 的座位，弃牌者不公开底牌、不产生牌型。
+	HandRanks map[Seat]string
+	BestFive  map[Seat][]Card
 }
 
 // State的值拷贝仅在内部使用；公开操作通过clone切断所有可变引用。
@@ -120,6 +125,14 @@ func copyResult(src HandResult) HandResult {
 	dst.HoleCards = make(map[Seat][2]Card, len(src.HoleCards))
 	for k, v := range src.HoleCards {
 		dst.HoleCards[k] = v
+	}
+	dst.HandRanks = make(map[Seat]string, len(src.HandRanks))
+	for k, v := range src.HandRanks {
+		dst.HandRanks[k] = v
+	}
+	dst.BestFive = make(map[Seat][]Card, len(src.BestFive))
+	for k, v := range src.BestFive {
+		dst.BestFive[k] = append([]Card{}, v...)
 	}
 	dst.Pots = make([]PotAward, len(src.Pots))
 	for i, p := range src.Pots {

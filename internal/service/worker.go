@@ -43,6 +43,12 @@ func (e *Engine) step() {
 	old := r.View.Revision
 	var s poker.State
 	if len(r.Snapshot) == 0 || r.View.Hand != nil && r.View.Hand.State.Street == "complete" {
+		// 权威手间停留窗口：上一手结束后、最早开始时间未到时不开新一手，
+		// 也不进入后续真人等待分支创建新手倒计时。时间基于持久化的绝对时刻，
+		// 因此 pause/resume 与服务重启都不会绕过剩余窗口。
+		if r.NextHandAt != nil && time.Now().Before(*r.NextHandAt) {
+			return
+		}
 		players := []poker.PlayerInit{}
 		for _, p := range r.View.Seats {
 			if p.Stack > 0 {
@@ -82,6 +88,8 @@ func (e *Engine) step() {
 			e.failWith(diagSnapshot, "snapshot", r.View.ID)
 			return
 		}
+		// 新手已开：清除上一手遗留的手间窗口。
+		r.NextHandAt = nil
 		r.View.Revision++
 		if result, ok := poker.Result(s); ok {
 			e.settle(&r, result)
@@ -407,9 +415,27 @@ func (e *Engine) settle(r *Record, result poker.HandResult) {
 			alive++
 		}
 	}
+	// 本手后不再开新手：终局不设置窗口，避免残留过期时间。
 	if r.View.HandsCompleted >= r.Config.MaxHands || alive < 2 {
 		r.View.Status = "completed"
+		r.NextHandAt = nil
+		return
 	}
+	// 设置权威手间停留窗口：摊牌/弃牌结束使用不同时长；未启用（<=0）时不留窗口。
+	if d := e.handInterval(result.Reason); d > 0 {
+		next := time.Now().Add(d)
+		r.NextHandAt = &next
+	} else {
+		r.NextHandAt = nil
+	}
+}
+
+// handInterval 返回本手结束后应停留的时长；零值表示不启用窗口。
+func (e *Engine) handInterval(reason string) time.Duration {
+	if reason == "showdown" {
+		return e.opts.HandIntervalShowdown
+	}
+	return e.opts.HandIntervalUncontested
 }
 func completed(r Record, result poker.HandResult) CompletedHandView {
 	return CompletedHandView{GameID: r.View.ID, HandNo: r.View.Hand.Number, Button: r.View.Hand.State.Button, Board: append([]poker.Card(nil), r.View.Hand.State.Board...), Result: result}

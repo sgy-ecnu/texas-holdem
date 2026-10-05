@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, api } from '../api'
 import {
   AVAILABILITY_LABEL,
@@ -7,12 +7,15 @@ import {
   statusLabel,
 } from '../format'
 import { useGamePolling, type PollMode } from '../hooks/useGamePolling'
+import { useHandSettlement } from '../hooks/useHandSettlement'
+import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion'
 import type { ActionDTO, Command, GameDTO, HealthDTO, ModelDTO } from '../types'
 import { ActionDock } from './ActionDock'
 import { ActionFeed } from './ActionFeed'
 import { HINT_DURATION_MS, HINT_FALLBACK_MS, hintFromAction, type ActionHint } from './ActionPopover'
 import { HandDetail } from './HandDetail'
 import { PokerTable } from './PokerTable'
+import { SettlementBar } from './SettlementBar'
 
 interface Props {
   initial: GameDTO
@@ -21,19 +24,6 @@ interface Props {
   onExit: () => void
 }
 
-// 系统 reduced-motion：动作标签取消缩放，改为静态高对比展示（生命周期 2200ms）。
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-  )
-  useEffect(() => {
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const onChange = () => setReduced(mq.matches)
-    mq.addEventListener('change', onChange)
-    return () => mq.removeEventListener('change', onChange)
-  }, [])
-  return reduced
-}
 
 interface StageProps extends Props {
   mode: PollMode
@@ -48,6 +38,8 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
   const [pending, setPending] = useState<Command | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [handOpen, setHandOpen] = useState(false)
+  // 详情弹层默认展示最近完成的一手；结算条「查看本手详情」可指定具体手数。
+  const [detailHandNo, setDetailHandNo] = useState(1)
   const [acting, setActing] = useState(false)
   // 行动历史：后端只下发 last_action，前端按 revision/序列号累积成滚动序列（纯展示）。
   const [history, setHistory] = useState<ActionDTO[]>([])
@@ -78,6 +70,25 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
   const reduced = usePrefersReducedMotion()
   // 正常动画由 animationend(~2200ms) 清理，此 timer 仅兜底；reduced-motion 无动画，按静态生命周期 2200ms 清理。
   const fallbackMs = reduced ? HINT_DURATION_MS : HINT_FALLBACK_MS
+
+  // ---- 谁赢了结算：观察 hands_completed 变化，逐手拉取 CompletedHandDTO 展示 ----
+  const settlement = useHandSettlement(game)
+  const settlementView = useMemo(
+    () =>
+      settlement.hand
+        ? { hand: settlement.hand, phase: settlement.phase, reduced }
+        : null,
+    [settlement.hand, settlement.phase, reduced],
+  )
+  const nameBySeat = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const s of game?.seats ?? []) map.set(s.seat, s.name)
+    return map
+  }, [game?.seats])
+  // 「收起」仅对当前这一手生效；下一手（新 key）自动重新展示。
+  const [dismissedHand, setDismissedHand] = useState<string | null>(null)
+  const settlementKey = settlement.hand ? `${settlement.hand.game_id}:${settlement.hand.hand_no}` : null
+  const barVisible = settlement.hand !== null && settlementKey !== dismissedHand
 
   // 推进某座位：当前动作到点（或动画结束）后清掉，再从队列取下一个。
   const advance = useCallback((seat: number, id: string) => {
@@ -324,7 +335,10 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
           <button
             className="btn btn-sm"
             disabled={game.hands_completed < 1}
-            onClick={() => setHandOpen(true)}
+            onClick={() => {
+              setDetailHandNo(game.hands_completed)
+              setHandOpen(true)
+            }}
           >
             手牌详情
           </button>
@@ -339,9 +353,27 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
       {/* 牌桌居中；操作条紧贴牌桌正下方，一屏内无需下滑即可操作。 */}
       <div className="play-layout">
         <div className={`table-wrap${stale ? ' is-stale' : ''}`}>
-          <PokerTable game={game} models={models} player={game.player} hints={hints} />
+          <PokerTable
+            game={game}
+            models={models}
+            player={game.player}
+            hints={hints}
+            settlement={settlementView}
+          />
           {stale && <div className="stale-tag">画面已过期 · 等待状态确认</div>}
         </div>
+
+        {barVisible && settlement.hand && (
+          <SettlementBar
+            hand={settlement.hand}
+            nameBySeat={nameBySeat}
+            onView={() => {
+              setDetailHandNo(settlement.hand!.hand_no)
+              setHandOpen(true)
+            }}
+            onDismiss={() => setDismissedHand(settlementKey)}
+          />
+        )}
 
         <ActionDock
           game={game}
@@ -404,7 +436,7 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
           gameId={game.id}
           handsCompleted={game.hands_completed}
           seats={game.seats}
-          initialHandNo={game.hands_completed}
+          initialHandNo={detailHandNo}
           onClose={() => setHandOpen(false)}
         />
       )}

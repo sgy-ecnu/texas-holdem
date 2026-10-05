@@ -147,6 +147,9 @@ type Record struct {
 	HumanSessionHash   *PlayerSessionHash
 	HumanActionTimeout time.Duration
 	HumanWait          *HumanWait
+	// NextHandAt 是下一手最早开始时间；非 nil 且未到时 worker 不开新一手、不创建
+	// 新手真人倒计时。随 Record 持久化，pause/resume 不重置，服务重启不丢失。
+	NextHandAt *time.Time
 }
 type Commit struct {
 	Record           Record
@@ -173,6 +176,11 @@ type Options struct {
 	// AITurnDelay 是 AI 每次提交动作后、推进下一个 actor 前的思考停顿；
 	// 零值或负值不等待（测试/快速部署），仅作用于 AI 座位，用于统一轮转节奏。
 	AITurnDelay time.Duration
+	// HandIntervalShowdown/HandIntervalUncontested 是每手结束后、开下一手前的权威
+	// 停留窗口（摊牌/弃牌结束）。零值或负值表示不启用（测试/快速部署）；生产由
+	// config 的 gameplay.hand_interval_*_sec 注入。
+	HandIntervalShowdown    time.Duration
+	HandIntervalUncontested time.Duration
 }
 
 var (

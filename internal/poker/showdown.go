@@ -2,25 +2,47 @@ package poker
 
 import "sort"
 
-// 五张牌编码按牌型、逐个踢脚字典序排序；枚举七选五取最大值。
+// handCategoryNames 是牌型等级 0-8 的中文名，与 score 的 category 一一对应。
+var handCategoryNames = [9]string{"高牌", "一对", "两对", "三条", "顺子", "同花", "葫芦", "四条", "同花顺"}
+
+func handCategoryName(category int) string {
+	if category < 0 || category >= len(handCategoryNames) {
+		return ""
+	}
+	return handCategoryNames[category]
+}
+
+// rankCards 返回一组牌的最高五张牌分值。保留为薄封装，胜负判定语义不变。
 func rankCards(cards []Card) uint64 {
+	value, _, _ := rankBest(cards)
+	return value
+}
+
+// rankBest 枚举所有五张组合，返回最高分值、对应牌型等级与最佳五张牌。
+// 相同分值时取枚举顺序中的第一组（组合按索引字典序稳定），保证结果可复现；
+// 不改变 rankCards 的分值语义。
+func rankBest(cards []Card) (uint64, int, [5]Card) {
 	var best uint64
+	var category int
+	var bestCards [5]Card
 	for a := 0; a < len(cards)-4; a++ {
 		for b := a + 1; b < len(cards)-3; b++ {
 			for c := b + 1; c < len(cards)-2; c++ {
 				for d := c + 1; d < len(cards)-1; d++ {
 					for e := d + 1; e < len(cards); e++ {
-						v := rankFive([5]Card{cards[a], cards[b], cards[c], cards[d], cards[e]})
+						hand := [5]Card{cards[a], cards[b], cards[c], cards[d], cards[e]}
+						v, cat := evalFive(hand)
 						if v > best {
-							best = v
+							best, category, bestCards = v, cat, hand
 						}
 					}
 				}
 			}
 		}
 	}
-	return best
+	return best, category, bestCards
 }
+
 func score(category int, kickers ...int) uint64 {
 	v := uint64(category)
 	for i := 0; i < 5; i++ {
@@ -31,7 +53,15 @@ func score(category int, kickers ...int) uint64 {
 	}
 	return v
 }
+
+// rankFive 返回五张牌的分值；保留为薄封装。
 func rankFive(cards [5]Card) uint64 {
+	v, _ := evalFive(cards)
+	return v
+}
+
+// evalFive 计算五张牌的分值与牌型等级（0 高牌 .. 8 同花顺）。
+func evalFive(cards [5]Card) (uint64, int) {
 	var counts [15]int
 	flush := true
 	for _, c := range cards {
@@ -65,7 +95,7 @@ func rankFive(cards [5]Card) uint64 {
 		}
 	}
 	if flush && straight > 0 {
-		return score(8, straight)
+		return score(8, straight), 8
 	}
 	four, three := 0, 0
 	pairs := []int{}
@@ -83,31 +113,31 @@ func rankFive(cards [5]Card) uint64 {
 		}
 	}
 	if four > 0 {
-		return score(7, four, singles[0])
+		return score(7, four, singles[0]), 7
 	}
 	if three > 0 && len(pairs) > 0 {
-		return score(6, three, pairs[0])
+		return score(6, three, pairs[0]), 6
 	}
 	if flush {
-		return score(5, ranks...)
+		return score(5, ranks...), 5
 	}
 	if straight > 0 {
-		return score(4, straight)
+		return score(4, straight), 4
 	}
 	if three > 0 {
-		return score(3, append([]int{three}, singles...)...)
+		return score(3, append([]int{three}, singles...)...), 3
 	}
 	if len(pairs) == 2 {
-		return score(2, pairs[0], pairs[1], singles[0])
+		return score(2, pairs[0], pairs[1], singles[0]), 2
 	}
 	if len(pairs) == 1 {
-		return score(1, append(pairs, singles...)...)
+		return score(1, append(pairs, singles...)...), 1
 	}
-	return score(0, ranks...)
+	return score(0, ranks...), 0
 }
 
 func (s *State) settle(reason string) {
-	r := HandResult{Reason: reason, Pots: []PotAward{}, Refunds: map[Seat]Chips{}, Payouts: map[Seat]Chips{}, HoleCards: map[Seat][2]Card{}, FinalStack: map[Seat]Chips{}}
+	r := HandResult{Reason: reason, Pots: []PotAward{}, Refunds: map[Seat]Chips{}, Payouts: map[Seat]Chips{}, HoleCards: map[Seat][2]Card{}, FinalStack: map[Seat]Chips{}, HandRanks: map[Seat]string{}, BestFive: map[Seat][]Card{}}
 	levels := []Chips{}
 	seen := map[Chips]bool{}
 	var ranks [9]uint64
@@ -115,17 +145,20 @@ func (s *State) settle(reason string) {
 		if !s.present[i] {
 			continue
 		}
-		if s.dealt[i] {
-			r.HoleCards[Seat(i)] = s.hole[i]
-		}
 		if p.Committed > 0 && !seen[p.Committed] {
 			seen[p.Committed] = true
 			levels = append(levels, p.Committed)
 		}
+		// 弃牌保密：只有实际参与摊牌的 active/all_in 座位才公开底牌与牌型；
+		// uncontested（弃牌结束）不产生任何公共牌型，也不记录任何他人底牌。
 		if reason == "showdown" && (p.Status == "active" || p.Status == "all_in") {
 			cards := append([]Card{}, s.board...)
 			cards = append(cards, s.hole[i][:]...)
-			ranks[i] = rankCards(cards)
+			value, category, best := rankBest(cards)
+			ranks[i] = value
+			r.HoleCards[Seat(i)] = s.hole[i]
+			r.HandRanks[Seat(i)] = handCategoryName(category)
+			r.BestFive[Seat(i)] = best[:]
 		}
 	}
 	sort.Slice(levels, func(i, j int) bool { return levels[i] < levels[j] })

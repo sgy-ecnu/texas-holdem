@@ -1,4 +1,4 @@
-import { chips, PLAYER_STATUS_LABEL } from '../format'
+import { chips, modelShortLabel, PLAYER_STATUS_LABEL } from '../format'
 import type { ModelDTO, PlayerDTO, SeatDTO } from '../types'
 import { PlayingCard } from './PlayingCard'
 
@@ -20,6 +20,15 @@ interface Props {
   holeHidden: boolean
   // 右半侧座位把牌背镜像到右侧，保证底牌始终朝桌外生长。
   flipHole?: boolean
+  // 结算模式：以 CompletedHandDTO 为准展示摊牌底牌/角色/最终筹码，关闭行动态与下注行。
+  settling?: boolean
+  // 摊牌要翻开的底牌（仅 showdown 参与者）；无则不渲染，弃牌者不翻牌。
+  settlementCards?: string[]
+  settlementRole?: 'winner' | 'loser' | null
+  // 该座位翻牌起始延迟（ms），按座位顺序错峰。
+  settlementDelayMs?: number
+  // 结算期间以该手 CompletedHandDTO.final_stacks 覆盖显示筹码。
+  finalStack?: number | null
   index: number
 }
 
@@ -42,21 +51,33 @@ export function Seat({
   holeCards,
   holeHidden,
   flipHole = false,
+  settling = false,
+  settlementCards,
+  settlementRole = null,
+  settlementDelayMs = 0,
+  finalStack = null,
   index,
 }: Props) {
   const live = player !== null
   const status = player?.status ?? 'active'
-  const stack = live ? (player as PlayerDTO).stack : seat.stack
+  const stack = finalStack != null ? finalStack : live ? (player as PlayerDTO).stack : seat.stack
   const classes = ['seat']
   if (isActor) classes.push('is-actor')
   if (isHuman) classes.push('is-human')
   if (isDimmed) classes.push('is-dimmed')
   if (flipHole) classes.push('is-right')
+  if (settling) classes.push('is-settling')
+  if (settlementRole === 'winner') classes.push('is-winner')
+  if (settlementRole === 'loser') classes.push('is-loser')
   if (status === 'folded') classes.push('is-folded')
   if (status === 'out') classes.push('is-out')
 
   const hasOwnCards = holeCards !== undefined && holeCards.length > 0
+  const hasSettlementCards = settlementCards !== undefined && settlementCards.length > 0
   const modelLabel = isHuman ? '真人玩家' : model ? model.label : seat.model_ref || '未绑定模型'
+  const modelRef = model?.ref ?? seat.model_ref ?? ''
+  // 只显示已知模型的短名；未知模型返回 null（座位卡省略，完整信息留在 title）。
+  const shortModel = isHuman ? null : modelShortLabel(modelRef)
   const statusKey = status !== 'active' ? (status === 'all_in' ? 'allin' : status) : null
 
   return (
@@ -65,20 +86,37 @@ export function Seat({
       style={{ animationDelay: `${index * 45}ms` }}
       title={`${seat.name} · ${modelLabel}`}
     >
-      {isActor && actorLabel && (
+      {!settling && isActor && actorLabel && (
         <span className="turn-badge" role="status">
           {actorLabel}
         </span>
       )}
 
-      {hasOwnCards ? (
+      {hasSettlementCards ? (
+        <div
+          className={`hole hole-reveal is-${settlementRole ?? 'neutral'}`}
+          aria-label={settlementRole === 'winner' ? '赢家底牌' : '摊牌底牌'}
+        >
+          {settlementCards!.map((c) => (
+            <span className="settle-flip" key={`${seat.seat}-${c}`} style={{ animationDelay: `${settlementDelayMs}ms` }}>
+              <span className="settle-flip-inner">
+                <span className="settle-back card card-back" aria-hidden="true" />
+                <span className="settle-face">
+                  <PlayingCard card={c} small />
+                </span>
+              </span>
+            </span>
+          ))}
+        </div>
+      ) : hasOwnCards ? (
         <div className="hole hole-open" aria-label="我的底牌">
           {holeCards.map((c) => (
             <PlayingCard key={c} card={c} small />
           ))}
         </div>
       ) : (
-        holeHidden && (
+        holeHidden &&
+        !settling && (
           <div className="hole" aria-hidden="true">
             <span className="mini-card" />
             <span className="mini-card back-2" />
@@ -91,6 +129,12 @@ export function Seat({
         <span className="seat-name" title={seat.name}>
           {seat.name}
         </span>
+        {/* 模型短名紧跟玩家名；未知/mock 等未收录模型整组不渲染（含括号），完整 label 见 title。 */}
+        {shortModel && (
+          <span className="seat-model" title={modelLabel}>
+            ({shortModel})
+          </span>
+        )}
         <span className="seat-tags">
           {isHuman && <span className="tag human">真人</span>}
           {isButton && <span className="tag dealer">D</span>}
@@ -112,13 +156,10 @@ export function Seat({
           {chips(stack)}
           <span className="unit">剩余</span>
         </span>
-        <span className="seat-model" title={modelLabel}>
-          {modelLabel}
-        </span>
       </div>
 
-      {/* 移动端网格没有桌沿徽章：本轮/累计仅在此显示（桌面端用 .rim-mark）。 */}
-      {live && player && (player.street_bet > 0 || player.committed > 0) && (
+      {/* 移动端网格没有桌沿徽章：本轮/累计仅在此显示（桌面端用 .rim-mark）；结算期间下注行淡出。 */}
+      {!settling && live && player && (player.street_bet > 0 || player.committed > 0) && (
         <div className="bet" title="本轮下注 / 本手累计投入">
           <span className="mini-chip" />
           <span>

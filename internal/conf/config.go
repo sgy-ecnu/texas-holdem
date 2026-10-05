@@ -26,23 +26,26 @@ const (
 	// LocalName 是同目录可选本地覆盖文件名。
 	LocalName = "config.local.yaml"
 
-	defaultHost          = "127.0.0.1"
-	defaultPort          = 8081
-	defaultHTTPTimeout   = 10 * time.Second
-	defaultFrontendPort  = 5173
-	defaultRedisAddress  = "127.0.0.1:6379"
-	defaultRedisDB       = 0
-	defaultRequestTmo    = 15 * time.Second
-	defaultMaxTokens     = 256
-	defaultMaxLiveCalls  = 1000
-	defaultHumanAction   = 60 * time.Second
-	defaultAITurnDelay   = 1500 * time.Millisecond
-	defaultDSNEnv        = "POKER_MYSQL_DSN"
-	defaultRedisPassEnv  = "POKER_REDIS_PASSWORD"
-	autoCatalog          = "auto"
-	maxFileBytes         = 1 << 20
-	maxOutputTokensLimit = 1 << 20
-	maxLiveCallsLimit    = 1000000
+	defaultHost         = "127.0.0.1"
+	defaultPort         = 8081
+	defaultHTTPTimeout  = 10 * time.Second
+	defaultFrontendPort = 5173
+	defaultRedisAddress = "127.0.0.1:6379"
+	defaultRedisDB      = 0
+	defaultRequestTmo   = 15 * time.Second
+	defaultMaxTokens    = 256
+	defaultMaxLiveCalls = 1000
+	defaultHumanAction  = 60 * time.Second
+	defaultAITurnDelay  = 1500 * time.Millisecond
+	// 每手结束后的权威手间停留窗口：摊牌较长、弃牌较短。显式 0/负值拒绝。
+	defaultHandIntervalShowdown    = 12 * time.Second
+	defaultHandIntervalUncontested = 8 * time.Second
+	defaultDSNEnv                  = "POKER_MYSQL_DSN"
+	defaultRedisPassEnv            = "POKER_REDIS_PASSWORD"
+	autoCatalog                    = "auto"
+	maxFileBytes                   = 1 << 20
+	maxOutputTokensLimit           = 1 << 20
+	maxLiveCallsLimit              = 1000000
 )
 
 // Config 是服务侧完整配置。秘密字段只在进程内从环境变量读取，绝不写回文件或输出。
@@ -70,6 +73,11 @@ type Config struct {
 
 	// AITurnDelay 是 AI 每次提交动作后、推进下一个 actor 前的思考停顿；缺省 1.5s，显式 0/负值拒绝。
 	AITurnDelay time.Duration
+
+	// HandIntervalShowdown/HandIntervalUncontested 是每手结束后的权威手间停留窗口，
+	// 由 gameplay.hand_interval_*_sec 配置（秒）；缺省 12s/8s，显式 0/负值拒绝。
+	HandIntervalShowdown    time.Duration
+	HandIntervalUncontested time.Duration
 
 	dsnEnv      string
 	passwordEnv string
@@ -146,6 +154,9 @@ type fileConfig struct {
 	Gameplay struct {
 		HumanActionTimeout *time.Duration `yaml:"human_action_timeout"`
 		AITurnDelay        *time.Duration `yaml:"ai_turn_delay"`
+		// 手间停留窗口以整秒配置；显式 null/非 int 由严格 schema 拒绝。
+		HandIntervalShowdown    *int `yaml:"hand_interval_showdown_sec"`
+		HandIntervalUncontested *int `yaml:"hand_interval_uncontested_sec"`
 	} `yaml:"gameplay"`
 }
 
@@ -251,20 +262,22 @@ func load(base string) (Config, error) {
 
 func defaults() Config {
 	return Config{
-		HTTPHost:           defaultHost,
-		HTTPPort:           defaultPort,
-		HTTPTimeout:        defaultHTTPTimeout,
-		FrontendPort:       defaultFrontendPort,
-		RedisAddress:       defaultRedisAddress,
-		RedisDB:            defaultRedisDB,
-		MaxLiveCalls:       defaultMaxLiveCalls,
-		DecisionTimeout:    defaultRequestTmo,
-		MaxOutputTokens:    defaultMaxTokens,
-		HumanActionTimeout: defaultHumanAction,
-		AITurnDelay:        defaultAITurnDelay,
-		dsnEnv:             defaultDSNEnv,
-		passwordEnv:        defaultRedisPassEnv,
-		catalogRaw:         autoCatalog,
+		HTTPHost:                defaultHost,
+		HTTPPort:                defaultPort,
+		HTTPTimeout:             defaultHTTPTimeout,
+		FrontendPort:            defaultFrontendPort,
+		RedisAddress:            defaultRedisAddress,
+		RedisDB:                 defaultRedisDB,
+		MaxLiveCalls:            defaultMaxLiveCalls,
+		DecisionTimeout:         defaultRequestTmo,
+		MaxOutputTokens:         defaultMaxTokens,
+		HumanActionTimeout:      defaultHumanAction,
+		AITurnDelay:             defaultAITurnDelay,
+		HandIntervalShowdown:    defaultHandIntervalShowdown,
+		HandIntervalUncontested: defaultHandIntervalUncontested,
+		dsnEnv:                  defaultDSNEnv,
+		passwordEnv:             defaultRedisPassEnv,
+		catalogRaw:              autoCatalog,
 	}
 }
 
@@ -378,8 +391,10 @@ var configSchema = &fieldSchema{kind: kindMap, children: map[string]*fieldSchema
 		"max_live_calls":    {kind: kindUint},
 	}},
 	"gameplay": {kind: kindMap, children: map[string]*fieldSchema{
-		"human_action_timeout": {kind: kindDuration},
-		"ai_turn_delay":        {kind: kindDuration},
+		"human_action_timeout":          {kind: kindDuration},
+		"ai_turn_delay":                 {kind: kindDuration},
+		"hand_interval_showdown_sec":    {kind: kindInt},
+		"hand_interval_uncontested_sec": {kind: kindInt},
 	}},
 }}
 
@@ -493,6 +508,12 @@ func mergeFile(dst, src *fileConfig) {
 	if src.Gameplay.AITurnDelay != nil {
 		dst.Gameplay.AITurnDelay = src.Gameplay.AITurnDelay
 	}
+	if src.Gameplay.HandIntervalShowdown != nil {
+		dst.Gameplay.HandIntervalShowdown = src.Gameplay.HandIntervalShowdown
+	}
+	if src.Gameplay.HandIntervalUncontested != nil {
+		dst.Gameplay.HandIntervalUncontested = src.Gameplay.HandIntervalUncontested
+	}
 }
 
 func applyFile(c *Config, raw *fileConfig) {
@@ -547,6 +568,12 @@ func applyFile(c *Config, raw *fileConfig) {
 	}
 	if raw.Gameplay.AITurnDelay != nil {
 		c.AITurnDelay = *raw.Gameplay.AITurnDelay
+	}
+	if raw.Gameplay.HandIntervalShowdown != nil {
+		c.HandIntervalShowdown = time.Duration(*raw.Gameplay.HandIntervalShowdown) * time.Second
+	}
+	if raw.Gameplay.HandIntervalUncontested != nil {
+		c.HandIntervalUncontested = time.Duration(*raw.Gameplay.HandIntervalUncontested) * time.Second
 	}
 }
 
@@ -631,6 +658,20 @@ func applyEnv(c *Config) error {
 		}
 		c.AITurnDelay = d
 	}
+	if v, ok := os.LookupEnv("POKER_HAND_INTERVAL_SHOWDOWN_SEC"); ok && v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return errors.New("CONFIG_INVALID")
+		}
+		c.HandIntervalShowdown = time.Duration(n) * time.Second
+	}
+	if v, ok := os.LookupEnv("POKER_HAND_INTERVAL_UNCONTESTED_SEC"); ok && v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return errors.New("CONFIG_INVALID")
+		}
+		c.HandIntervalUncontested = time.Duration(n) * time.Second
+	}
 	return nil
 }
 
@@ -691,6 +732,9 @@ func (c *Config) finalize() error {
 		return errors.New("CONFIG_INVALID")
 	}
 	if c.AITurnDelay <= 0 {
+		return errors.New("CONFIG_INVALID")
+	}
+	if c.HandIntervalShowdown <= 0 || c.HandIntervalUncontested <= 0 {
 		return errors.New("CONFIG_INVALID")
 	}
 	home, err := os.UserHomeDir()

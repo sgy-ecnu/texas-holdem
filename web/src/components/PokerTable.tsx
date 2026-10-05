@@ -1,9 +1,27 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { chips, STREET_LABEL } from '../format'
-import type { GameDTO, ModelDTO, PlayerDTO, PlayerDTOView } from '../types'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { chips } from '../format'
+import {
+  bestFiveBreakdown,
+  finalStackBySeat,
+  humanSidePotIndex,
+  payoutTotalBySeat,
+  showdownParticipantSeats,
+  winnerSeats,
+  type SettlementPhase,
+} from '../settlement'
+import type { CompletedHandDTO, GameDTO, ModelDTO, PlayerDTO, PlayerDTOView } from '../types'
 import { ActionPopover, type ActionHint, type ActionPlacement } from './ActionPopover'
 import { PlayingCard } from './PlayingCard'
 import { Seat } from './Seat'
+import { StreetTrack } from './StreetTrack'
+import { WinnerTag } from './WinnerTag'
+
+// 结算展示（Task 2）：结算期间牌桌的公共牌/底牌/获奖/最终筹码全部来自该手 CompletedHandDTO。
+export interface PokerTableSettlement {
+  hand: CompletedHandDTO
+  phase: SettlementPhase
+  reduced: boolean
+}
 
 interface Props {
   game: GameDTO
@@ -14,6 +32,8 @@ interface Props {
   hints?: Map<number, ActionHint>
   // 单个动作标签动画自然结束回调（供 Stage 的每座位 FIFO 队列推进）。
   onHintDone?: (seat: number, id: string) => void
+  // 谁赢了结算（非 null 时进入独立结算模式，抑制动作标签与本街下注徽章）。
+  settlement?: PokerTableSettlement | null
 }
 
 // 视觉槽位：以椭圆半径的归一化偏移表示（dx/right、dy/down，范围 [-1,1]）。
@@ -74,7 +94,7 @@ const MARK_HALF_W_DEFAULT = 90
 const FELT_RX_FRAC = 0.434
 
 // 椭圆牌桌：中央公共牌/底池；桌沿徽章；外圈座位卡。
-export function PokerTable({ game, models, player = null, hints, onHintDone }: Props) {
+export function PokerTable({ game, models, player = null, hints, onHintDone, settlement = null }: Props) {
   const hand = game.hand
   // 实测 stage 尺寸，用于把槽位映射到实际像素、避免窄屏溢出。
   const stageRef = useRef<HTMLDivElement | null>(null)
@@ -124,9 +144,38 @@ export function PokerTable({ game, models, player = null, hints, onHintDone }: P
   const humanSeat = game.human_seat ?? null
   const viewerSeat = player?.seat ?? null
   const humanCards = player?.hole_cards ?? []
-  // 有进行中的手牌且 actor 已确定时，非行动座位弱化，让轮转位置一眼可见。
+
+  // ---- 结算展示：独立模式，数据全部取自该手 CompletedHandDTO ----
+  const settled = settlement?.hand ?? null
+  const settling = settled !== null
+  const winnerSet = useMemo(() => (settled ? winnerSeats(settled) : new Set<number>()), [settled])
+  const payoutMap = useMemo(() => (settled ? payoutTotalBySeat(settled) : new Map<number, number>()), [settled])
+  const finalMap = useMemo(() => (settled ? finalStackBySeat(settled) : new Map<number, number>()), [settled])
+  const participantOrder = useMemo(
+    () => (settled && settled.reason === 'showdown' ? showdownParticipantSeats(settled) : []),
+    [settled],
+  )
+  const participantSet = useMemo(() => new Set(participantOrder), [participantOrder])
+  const holeBySeat = useMemo(() => {
+    const map = new Map<number, string[]>()
+    if (settled) for (const h of settled.hole_cards) map.set(h.seat, h.cards)
+    return map
+  }, [settled])
+  const rankBySeat = useMemo(() => {
+    const map = new Map<number, string>()
+    if (settled) for (const s of settled.showdown) map.set(s.seat, s.hand_rank)
+    return map
+  }, [settled])
+  const breakdownBySeat = useMemo(() => {
+    const map = new Map<number, string | null>()
+    if (settled) for (const s of settled.showdown) map.set(s.seat, bestFiveBreakdown(s.best_five))
+    return map
+  }, [settled])
+  const leaving = settlement?.phase === 'finished'
+  const showChips = settlement?.phase === 'award' || settlement?.phase === 'hold'
+  // 有进行中的手牌且 actor 已确定时，非行动座位弱化，让轮转位置一眼可见；结算期间不弱化。
   const activeHand = hand !== null && hand.street !== 'complete'
-  const focusActor = activeHand && actor !== null
+  const focusActor = activeHand && actor !== null && !settling
 
   // 座位 → 槽位：真人座位映射到底部 B，其余座位按座位号顺时针（纯旋转）依次占位。
   const layout = useMemo(() => {
@@ -195,15 +244,23 @@ export function PokerTable({ game, models, player = null, hints, onHintDone }: P
     return { seatAt, rimAt }
   }, [stageSize.w, stageSize.h, markWidths])
 
+  const board = settled ? settled.board : (hand?.board ?? [])
+  const potValue = settled ? settled.pots.reduce((sum, p) => sum + p.amount, 0) : (hand?.pot ?? 0)
+  const trackStreet = settled ? 'complete' : (hand?.street ?? null)
+  const trackBet = settled ? 0 : (hand?.current_bet ?? 0)
+  const trackBoardLength = board.length
+  const trackReason = settled ? settled.reason : null
+  const trackHandNo = settled ? settled.hand_no : (hand?.number ?? null)
+
   return (
-    <div className="stage" ref={stageRef}>
+    <div className={`stage${settling ? ' is-settling' : ''}`} data-settlement={settlement?.phase ?? 'idle'} ref={stageRef}>
       <div className="rail">
         <div className="felt">
           <div className="table-word">Texas Hold'em</div>
           <div className="center">
             <div className="board" aria-label="公共牌">
               {Array.from({ length: 5 }).map((_, i) => {
-                const card = hand?.board[i]
+                const card = board[i]
                 return card ? (
                   <PlayingCard key={card} card={card} />
                 ) : (
@@ -214,19 +271,26 @@ export function PokerTable({ game, models, player = null, hints, onHintDone }: P
             <div className="pot">
               <span className="pot-chip" aria-hidden="true" />
               <span className="caption">底池</span>
-              <span className="value">{chips(hand?.pot ?? 0)}</span>
+              <span className="value">{chips(potValue)}</span>
             </div>
             <div className="street-label">
-              {hand ? STREET_LABEL[hand.street] : '等待开始'}
-              {hand && hand.current_bet > 0 ? ` · 当前注 ${chips(hand.current_bet)}` : ''}
+              <StreetTrack
+                street={trackStreet}
+                boardLength={trackBoardLength}
+                currentBet={trackBet}
+                status={game.status}
+                completedReason={trackReason}
+                handNumber={trackHandNo}
+              />
             </div>
           </div>
         </div>
       </div>
 
-      {/* 桌沿层：本街下注徽章（本轮 X + 次要的累计 Y），紧贴所属座位、护栏内侧外围带。 */}
-      <div className="rim-marks" aria-hidden="true" ref={marksRef}>
-        {game.seats.map((seat) => {
+      {/* 桌沿层：本街下注徽章；结算期间整体淡出，只保留该手结算快照。 */}
+      <div className={`rim-marks${settling ? ' is-settling' : ''}`} aria-hidden="true" ref={marksRef}>
+        {!settling &&
+          game.seats.map((seat) => {
           const slot = layout.get(seat.seat)
           const p = playerBySeat.get(seat.seat)
           if (!slot || !p || (p.street_bet <= 0 && p.committed <= 0)) return null
@@ -255,7 +319,7 @@ export function PokerTable({ game, models, player = null, hints, onHintDone }: P
           const pos = geometry.seatAt(slot)
           const playerState = playerBySeat.get(seat.seat) ?? null
           const isHuman = viewerSeat === seat.seat
-          const isActor = actor === seat.seat
+          const isActor = !settling && actor === seat.seat
           // 非当前行动者、且仍在参与本手的座位弱化；弃牌/出局已有更弱的既有样式。
           const isDimmed = focusActor && !isActor && playerState?.status === 'active'
           // 「轮到我」仅本浏览器本人座位；其他行动座位（含观战视角的真人座位）显示思考态。
@@ -266,11 +330,12 @@ export function PokerTable({ game, models, player = null, hints, onHintDone }: P
                 ? '等待真人'
                 : '思考中'
             : null
-          // 只有真人本人座位可显示自己的两张底牌；其余座位一律牌背。
-          const ownCards = isHuman && humanCards.length === 2 ? humanCards : []
+          // 只有真人本人座位可显示自己的两张底牌；其余座位一律牌背。结算期间改由该手快照揭示。
+          const ownCards = !settling && isHuman && humanCards.length === 2 ? humanCards : []
           const hasOwn = ownCards.length === 2
-          // 未弃牌且本手进行中时，仅展示牌背占位（公共接口不下发底牌）。
+          // 未弃牌且本手进行中时，仅展示牌背占位（公共接口不下发底牌）；结算期间不画牌背。
           const holeHidden =
+            !settling &&
             !hasOwn &&
             hand !== null &&
             hand.street !== 'complete' &&
@@ -278,14 +343,24 @@ export function PokerTable({ game, models, player = null, hints, onHintDone }: P
             playerState.status !== 'folded' &&
             playerState.status !== 'out'
           // 座位旁临时动作标签：与 <Seat> 同级（不放进 .seat），避免被 is-dimmed/is-folded 降透明度。
-          const hint = hints?.get(seat.seat)
+          const hint = settling ? undefined : hints?.get(seat.seat)
+          // 结算角色：摊牌参与者翻牌；赢家亮金、输家底牌降透明（姓名/筹码仍可读）。
+          const isWinner = winnerSet.has(seat.seat)
+          const isParticipant = participantSet.has(seat.seat)
+          const settlementCards =
+            settled && isParticipant ? holeBySeat.get(seat.seat) : undefined
+          const settlementRole: 'winner' | 'loser' | null = settled
+            ? isWinner
+              ? 'winner'
+              : isParticipant
+                ? 'loser'
+                : null
+            : null
+          const settlementDelayMs = isParticipant ? 250 + participantOrder.indexOf(seat.seat) * 60 : 0
+          const payoutSum = payoutMap.get(seat.seat) ?? 0
           // 底部真人座位＝座位右侧动作；观战与真人视角同规则（按 game.human_seat，不按 viewer）。
           const isBottomHuman = humanSeat !== null && seat.seat === humanSeat
-          // 底部正中座位：上方是中央保护区（公共牌/底池/街名），改走右侧展开以避免越入保护区
-          // （全 AI 局无真人时同样适用）；左半桌 right bottom / 右半桌 left bottom。
           const isBottomCenter = slot.dy > 0.9 && Math.abs(slot.dx) < 0.01
-          // 展开方向：底部 → 右侧（left center）；左半桌 → right bottom；右半桌 → left bottom；
-          // 正顶部单座（dx≈0）→ center bottom。只缩放、固定锚点，放大缩回不横向漂移。
           const place: ActionPlacement =
             isBottomHuman || isBottomCenter
               ? 'right'
@@ -294,6 +369,10 @@ export function PokerTable({ game, models, player = null, hints, onHintDone }: P
                 : slot.dx > 0.001
                   ? 'above-right'
                   : 'above-center'
+          // 筹码向赢家飞：起点在牌桌中心，用相对座位的像素偏移表示。
+          const flyX = stageSize.w > 0 ? ((50 - pos.cx) / 100) * stageSize.w : 0
+          const flyY = stageSize.h > 0 ? ((50 - pos.cy) / 100) * stageSize.h : 0
+          const showFly = settling && isWinner && payoutSum > 0 && showChips
           return (
             <div
               className={`seat-slot${isActor ? ' is-actor-slot' : ''}${hint ? ' has-hint' : ''}`}
@@ -315,8 +394,36 @@ export function PokerTable({ game, models, player = null, hints, onHintDone }: P
                 holeCards={hasOwn ? ownCards : undefined}
                 holeHidden={holeHidden}
                 flipHole={pos.cx > 55}
+                settling={settling}
+                settlementCards={settlementCards}
+                settlementRole={settlementRole}
+                settlementDelayMs={settlementDelayMs}
+                finalStack={settled ? finalMap.get(seat.seat) ?? null : null}
                 index={i}
               />
+              {showFly && (
+                <span
+                  className="settle-chips"
+                  aria-hidden="true"
+                  style={{ '--fly-x': `${flyX}px`, '--fly-y': `${flyY}px` } as CSSProperties}
+                >
+                  {[0, 1, 2].map((k) => (
+                    <span className="settle-chip" key={k} style={{ animationDelay: `${k * 90}ms` }} />
+                  ))}
+                </span>
+              )}
+              {settled && isWinner && payoutSum > 0 && (
+                <WinnerTag
+                  placement={place}
+                  amount={payoutSum}
+                  rank={rankBySeat.get(seat.seat) ?? null}
+                  breakdown={breakdownBySeat.get(seat.seat) ?? null}
+                  isMe={viewerSeat === seat.seat}
+                  sidePotIndex={viewerSeat === seat.seat ? humanSidePotIndex(settled, seat.seat) : null}
+                  uncontested={settled.reason !== 'showdown'}
+                  leaving={leaving}
+                />
+              )}
               {hint && (
                 <ActionPopover
                   key={hint.id}
