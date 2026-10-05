@@ -389,3 +389,113 @@ stale-server: port 8081 free; nothing to stop
 - `stop_stale_server` 固定检测 8081；若通过 `POKER_HTTP_PORT`/YAML 改端口，本次不清理该
   端口的残留（本次 bug 固定为 8081）。不触碰 runtime 隔离的 mysql/redis。
 - 未 commit/push；未改 Go、`web/src`、config、`docs/contracts.md`。
+
+---
+
+# 追加轮：修复 go run 产物在 TMPDIR `go-build<随机数>` 下的身份核验（2026-10-05）
+
+## 问题根因
+
+`go run` 在部分环境把编译产物放在 `$TMPDIR/go-build<随机数>/b001/exe/server`
+（实测 `/var/folders/.../T/go-build195384386/b001/exe/server`，realpath 前缀
+`/private/var/...`），目录名是 `go-build<随机数>` 而非精确的 `go-build`。
+旧 `server_listener_identity()` 用精确匹配：
+
+```python
+require(cache == exe or cache in exe.parents or "go-build" in exe.parts,
+        "STALE_SERVER_UNKNOWN_PROCESS_MANUAL")
+```
+
+`"go-build" in exe.parts` 对 `go-build195384386` 为 False → 抛
+`STALE_SERVER_UNKNOWN_PROCESS_MANUAL` → `make run`/`make dev` 启动前中止
+（`make: *** [run] Error 1`）。
+
+## 改动点
+
+- `scripts/local.py` `server_listener_identity()`：
+  `"go-build" in exe.parts` → `any(p.startswith("go-build") for p in exe.parts)`。
+  其余安全约束全部不变（cwd=项目根、argv 含 `cmd/server`/`texas-holdem`、进程归属当前
+  用户、采集前后启动时间一致）；仍有 `cache == exe or cache in exe.parents` 这两条
+  GOCACHE 路径约束，前缀匹配只放宽「go run 临时产物目录名」这一条，不会误杀陌生进程。
+- `tests/e2e/test_local.py` 新增 2 项（mock，不真杀进程）：
+  `test_server_listener_identity_accepts_tmpdir_go_build_random_server`、
+  `test_server_listener_identity_rejects_non_go_build_prefix`。
+- `go_run_parent_identity()` 核实结论：**无同类问题，未改**。它沿 ppid 校验的是
+  `go` 父进程本身（`exe.name == "go"` + `argv[:2] == ["go","run"]` + argv 含
+  `cmd/server`/`texas-holdem` + cwd=项目根），不做 go-build 目录名匹配，
+  不涉及 `TMPDIR/go-build<随机数>` 判定。
+
+## `make test-scripts`（全量，原始输出尾部）
+
+```text
+test_server_listener_identity_accepts_tmpdir_go_build_random_server: PASS
+test_server_listener_identity_rejects_non_go_build_prefix: PASS
+test_server_listener_identity_rejects_non_go_run_executable: PASS
+...
+scripts: tests=72 passed=72 failed=0
+```
+
+新增两项在真实路径上的谓词对照（旧 False / 新 True）：
+
+```text
+parts: ('/', 'private', 'var', 'folders', 'w2', 'bntp6mgj2nn81dbr0cc2nnw00000gn', 'T', 'go-build195384386', 'b001', 'exe', 'server')
+OLD  'go-build' in parts        -> False
+NEW  any startswith('go-build') -> True
+OLD full identity = False
+NEW full identity = True
+```
+
+## 真实闭环 A：`make run` 清理 GOCACHE 路径残留
+
+在本机 Go 1.26 下，默认 GOCACHE 命中时 `go run` 直接执行缓存中的链接产物
+（`~/Library/Caches/go-build/57/...-d/server`）。后台 `make dev` 制造残留
+（pid=29688，父 `go run ./cmd/server` pid=29684），随后 `make run`：
+
+```text
+stage=npm-ci; exit=0; output=credential-redacted-only
+stage=frontend-build; exit=0; output=credential-redacted-only
+stale-server: stopping project server pid=29688
+stale-server: port 8081 cleared
+stale-server: port 8081 free; nothing to stop
+2026/10/05 22:16:49 INFO [HTTP] server listening addr=127.0.0.1:8081
+```
+
+- health：`{"mysql":"available","redis":"available","storage_degraded":false,"allow_paid_models":false,"max_live_calls":1000}` → HTTP 200。
+- bundle 一致：服务返回 `/` 与本地 `web/dist/index.html` 同为
+  `sha256=48b3495de5eb4dba90e105b02e2d3b2c8e890ae22a82e8191d6e4c449a179189`；
+  `/assets/index-C-hqzINN.js` HTTP 200。
+- 停止后：`8081: 0 listener(s)`、`3306: 1 listener(s)`、`6379: 2 listener(s)`。
+- 无 `STALE_SERVER_UNKNOWN_PROCESS_MANUAL`（日志仅上述 stale-server 行；`make: *** [run]
+  Error 241` 为 SIGINT 退出码，既有行为，非启动失败）。
+
+## 真实闭环 B：强制 TMPDIR `go-build<随机数>` 路径残留并清理（本次修复目标场景）
+
+用全新 GOCACHE 启动 `local.py dev`，使 `go run` 把产物放到 TMPDIR 的
+`go-build<随机数>`（`go_cache()` 返回的全新缓存目录不在其 parents 中，只能靠新前缀分支通过）：
+
+```text
+listener pid=30628
+server  30628 gaosper  txt    REG   1,17 19380914 ... /private/var/folders/w2/bntp6mgj2nn81dbr0cc2nnw00000gn/T/go-build195384386/b001/exe/server
+```
+
+在同一 GOCACHE 下再跑一次 `python3 -u scripts/local.py dev`：
+
+```text
+stale-server: stopping project server pid=30628
+stale-server: port 8081 cleared
+2026/10/05 22:19:06 INFO [HTTP] server listening addr=127.0.0.1:8081
+30628 gone
+```
+
+- 真实 TMPDIR `go-build195384386` 目录下的 server 进程被识别并清理，**未**报
+  `STALE_SERVER_UNKNOWN_PROCESS_MANUAL`。
+- 清理后端口：`8081: 0 listener(s)`、`3306: 1 listener(s)`、`6379: 2 listener(s)`，
+  无 `scripts/local.py`/`go run ./cmd/server`/`exe/server` 残留。
+
+## 未验证 / 边界
+
+- 本机默认 GOCACHE 命中时 `go run` 走 GOCACHE 链接产物路径（闭环 A），TMPDIR
+  `go-build<随机数>` 路径需用全新 GOCACHE 才复现（闭环 B）；前缀匹配对两种路径均兼容。
+- 陌生进程拒绝、TMPDIR 非 go-build 前缀拒绝仅由 mock 单测覆盖，未真实验证线上他人进程。
+- `stop_stale_server` 固定检测 8081，改 `POKER_HTTP_PORT`/YAML 端口时不清理该端口残留。
+- 未 commit/push；未改 Go、`web/src`、config。

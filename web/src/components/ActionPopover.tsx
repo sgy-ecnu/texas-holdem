@@ -40,20 +40,28 @@ const KIND_CLASS: Record<ActionKind, string> = {
 //   right        底部真人 → origin left center，向右展开
 export type ActionPlacement = 'above-left' | 'above-right' | 'above-center' | 'right'
 
+// 标签锚定边（内侧固定贴边）：明确标签贴住所属座位卡的哪条边，并决定短尖角朝向与缩放原点。
+//   below → 贴卡片下沿居中，尖角朝上（顶部座位；向下朝桌内展开，避开上方常驻下注条）。
+//   right → 贴卡片右侧、垂直居中，尖角朝左（正左/左下/正下座位；朝桌心一侧，避开上方底牌）。
+//   left  → 贴卡片左侧、垂直居中，尖角朝右（正右/右下座位；镜像）。
+// placement 仍保留给赢家标签与列表布局回退；动作标签定位改由 anchor 决定，避免标签浮在座位间隙。
+export type ActionAnchor = 'below' | 'right' | 'left'
+
 interface Props {
   hint: ActionHint
   placement: ActionPlacement
+  anchor: ActionAnchor
   // 单次动画（2200ms）自然结束回调，供每座位 FIFO 队列推进；reduced-motion 下不触发，靠 timer。
   onDone?: (id: string) => void
 }
 
 // 纯展示：四种动作统一 scale(1.8)、总时长 2200ms、80ms 淡入、320ms 后 600ms 缓慢缩回、停留、淡出；
-// 不循环、不闪烁、不回弹。定位 / 展开方向由 placement 类决定，配色由 kind 类决定。
+// 不循环、不闪烁、不回弹。贴边位置由 anchor 类决定、配色由 kind 类决定；placement 仅作列表布局回退。
 // aria-hidden：语义宣读由 ActionFeed（role=log）承担，避免重复播报。
-export function ActionPopover({ hint, placement, onDone }: Props) {
+export function ActionPopover({ hint, placement, anchor, onDone }: Props) {
   return (
     <span
-      className={`action-popover is-${KIND_CLASS[hint.kind]} is-${placement}`}
+      className={`action-popover is-${KIND_CLASS[hint.kind]} is-${placement} anchor-${anchor}`}
       aria-hidden="true"
       onAnimationEnd={() => onDone?.(hint.id)}
     >

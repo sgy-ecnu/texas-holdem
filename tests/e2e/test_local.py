@@ -459,6 +459,28 @@ class LocalSafety(unittest.TestCase):
             identity = local.server_listener_identity(14775)
         self.assertEqual(identity["pid"], 14775)
 
+    def test_server_listener_identity_accepts_tmpdir_go_build_random_server(self):
+        # go run 把编译产物放在 TMPDIR 下的 go-build<随机数> 目录，目录名不等于 go-build。
+        exe = "/var/folders/w2/bntp6mgj2nn81dbr0cc2nnw00000gn/T/go-build627292418/b001/exe/server"
+        with patch.object(local, "process_snapshot", return_value=("u", "SN", "Sat Oct 3 12:00:00 2026")), \
+                patch.object(local, "process_arguments", return_value=(exe, [exe])), \
+                patch.object(local, "go_cache", return_value=Path("/fixture/other-gocache")), \
+                patch.object(local, "canonical_path", side_effect=lambda value: Path(os.path.normpath(value))), \
+                patch.object(local, "captured", side_effect=self.stale_identity_capture(14775)):
+            identity = local.server_listener_identity(14775)
+        self.assertEqual(identity["pid"], 14775)
+
+    def test_server_listener_identity_rejects_non_go_build_prefix(self):
+        # 目录名不是 go-build 前缀（如 gocacheXYZ），且不在 GOCACHE 下，仍拒绝。
+        exe = "/tmp/gocacheXYZ/ab/abc-d/server"
+        with patch.object(local, "process_snapshot", return_value=("u", "SN", "Sat Oct 3 12:00:00 2026")), \
+                patch.object(local, "process_arguments", return_value=(exe, [exe])), \
+                patch.object(local, "go_cache", return_value=Path("/fixture/go-build")), \
+                patch.object(local, "canonical_path", side_effect=lambda value: Path(os.path.normpath(value))), \
+                patch.object(local, "captured", side_effect=self.stale_identity_capture(999)):
+            with self.assertRaises(local.SafeError):
+                local.server_listener_identity(999)
+
     def test_server_listener_identity_rejects_non_go_run_executable(self):
         with patch.object(local, "process_snapshot", return_value=("u", "SN", "Sat Oct 3 12:00:00 2026")), \
                 patch.object(local, "process_arguments",

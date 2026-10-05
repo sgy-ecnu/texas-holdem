@@ -521,11 +521,11 @@ select {
   user-select: none;
 }
 
-/* 牌桌内收 5.5%：让出外圈给座位环绕（座位落在牌桌外沿，中央公共牌区不被压住），
-   牌桌自身宽度仍随 stage 增大；配合更大的 stage 上限，整体比旧版更大。 */
+/* 牌桌内收：为「座位外侧下注条」留出外围带（上/下 ~12%、左/右 ~11%）。
+   座位由 PokerTable 依实测尺寸环绕，下注条挂在座位外侧；外层留白承载座位卡+底牌+下注条+行动标签。 */
 .rail {
   position: absolute;
-  inset: 5.5%;
+  inset: 12% 11%;
   border-radius: 50%;
   background:
     linear-gradient(180deg, var(--rail-1), var(--rail-2) 70%);
@@ -669,6 +669,31 @@ select {
   justify-content: center;
   gap: 3px;
   transition: border-color 0.25s, box-shadow 0.25s, opacity 0.25s;
+}
+/* 窄桌面椭圆布局的紧凑座位卡：仅当椭圆环绕、且相邻座位卡会横向重叠时启用
+   （见 PokerTable 的 .stage.is-narrow-seats）。只收窄宽度 / 内边距、字号略降，
+   保持固定高度与两行结构；不再因顶部下注条放不下而整页退化为列表长条。 */
+.stage.is-narrow-seats .seat {
+  width: 108px;
+  padding: 8px 7px;
+}
+.stage.is-narrow-seats .seat .seat-no {
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+}
+.stage.is-narrow-seats .seat .seat-name {
+  font-size: 11.5px;
+}
+.stage.is-narrow-seats .seat .seat-model {
+  max-width: 34px;
+}
+.stage.is-narrow-seats .seat .seat-stack {
+  font-size: 13px;
+  gap: 4px;
+}
+.stage.is-narrow-seats .seat .seat-stack .unit {
+  font-size: 8.5px;
 }
 /* 行动座位高亮：取消 scale 放大，改用边框 + 顶部状态条 + 光晕，减少与相邻座位的边缘碰撞。 */
 .seat.is-actor {
@@ -934,6 +959,11 @@ select {
    颜色只区分动作（尺寸统一）。定位用独立 translate，缩放走 transform；展开方向由 is-* 决定。 */
 .action-popover {
   --pop-scale: 1.8;
+  /* 贴边间距与短尖角长度：二者相等，尖角顶点恰好触到座位卡边缘。 */
+  --pop-gap: 6px;
+  --pop-arrow: 6px;
+  /* 尖角默认色，由动作类覆盖；用变量保证尖角与标签描边同色、视觉相连。 */
+  --pop-accent: #aab4bc;
   position: absolute;
   z-index: 60;
   pointer-events: none;
@@ -954,53 +984,103 @@ select {
 }
 /* 四色：实色背景，避免暗色牌桌透过来削弱可读性；黑色落影 + 同色静态光晕。 */
 .action-popover.is-fold {
+  --pop-accent: #aab4bc;
   background: #30383d;
   color: #f3f5f7;
-  border-color: #aab4bc;
+  border-color: var(--pop-accent);
   box-shadow: 0 6px 16px 0 rgba(0, 0, 0, 0.45), 0 0 12px rgba(170, 180, 188, 0.25);
 }
 .action-popover.is-check {
+  --pop-accent: #82d5e8;
   background: #183d46;
   color: #e0f8ff;
-  border-color: #82d5e8;
+  border-color: var(--pop-accent);
   box-shadow: 0 6px 16px 0 rgba(0, 0, 0, 0.45), 0 0 12px rgba(130, 213, 232, 0.25);
 }
 .action-popover.is-call {
+  --pop-accent: #e9c768;
   background: #594216;
   color: #fff0b8;
-  border-color: #e9c768;
+  border-color: var(--pop-accent);
   box-shadow: 0 6px 16px 0 rgba(0, 0, 0, 0.45), 0 0 12px rgba(233, 199, 104, 0.25);
 }
 .action-popover.is-raise {
+  --pop-accent: #fff2bb;
   background: #f2cd67;
   color: #241b07;
-  border-color: #fff2bb;
+  border-color: var(--pop-accent);
   box-shadow: 0 6px 16px 0 rgba(0, 0, 0, 0.45), 0 0 12px rgba(255, 242, 187, 0.25);
 }
-/* 展开方向（不是简单 center bottom）：固定锚点，只缩放不横向漂移。
-   bottom 预留 27px 以越过可伸出卡片顶约 15px 的行动状态标签。 */
-.action-popover.is-above-left {
-  right: 0;
-  bottom: calc(100% + 27px);
-  transform-origin: right bottom;
-}
-.action-popover.is-above-right {
-  left: 0;
-  bottom: calc(100% + 27px);
-  transform-origin: left bottom;
-}
-.action-popover.is-above-center {
+/* 定位锚定边（内侧固定贴边 + 短尖角指向所属座位卡）：
+   动作标签贴住所属座位卡的一条边，短尖角（::after 三角形）自贴边一侧伸向卡片；
+   缩放原点固定在贴边一侧，放大时向远离卡片方向展开，尖角连接点始终不脱离卡片。
+   below → 贴卡片下沿居中（顶部座位；向下朝桌内展开，与上方常驻下注条完全垂直分离，
+           也避免与相邻侧边座位标签落进同一空隙）；
+   right → 贴卡片右侧、垂直居中（正左/左下/正下座位；朝桌心一侧，避开上方底牌）；
+   left  → 贴卡片左侧、垂直居中（正右/右下座位；镜像）。
+   不再使用旧的「上方 27px 斜向」摆放：那会让相邻座位的标签落进同一片空隙、看不出归属。 */
+.action-popover.anchor-below {
   left: 50%;
-  bottom: calc(100% + 27px);
+  right: auto;
+  top: calc(100% + var(--pop-gap));
+  bottom: auto;
   translate: -50% 0;
-  transform-origin: center bottom;
+  transform-origin: center top;
 }
-/* 底部真人座位：座位右侧 12px，纵向居中；缩放原点左侧中央，向右扩展、不侵入上方底牌。 */
-.action-popover.is-right {
-  left: calc(100% + 12px);
+.action-popover.anchor-right {
+  left: calc(100% + var(--pop-gap));
+  right: auto;
   top: 50%;
+  bottom: auto;
   translate: 0 -50%;
   transform-origin: left center;
+}
+.action-popover.anchor-left {
+  right: calc(100% + var(--pop-gap));
+  left: auto;
+  top: 50%;
+  bottom: auto;
+  translate: 0 -50%;
+  transform-origin: right center;
+}
+/* 侧边标签紧凑化：贴左侧后向桌心（公共牌方向）展开，长「加注到 Y」在 1.8 倍峰值会横向逼近公共牌。
+   收窄 max-width 使其折行增高、减少横向伸展，避免遮挡公共牌；不缩字号、不降特效强度。 */
+.action-popover.anchor-left,
+.action-popover.anchor-right {
+  max-width: 128px;
+}
+/* 短尖角：三角形底边压在标签贴边一侧、顶点伸向卡片；长度等于 --pop-gap，正常尺寸下顶点恰好触到卡片。
+   缩放时因 transform-origin 在贴边一侧，尖角连接线固定、只向卡片方向加深重叠，绝不脱离卡片。 */
+.action-popover::after {
+  content: "";
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.action-popover.anchor-below::after {
+  left: 50%;
+  top: calc(-1 * var(--pop-arrow));
+  transform: translateX(-50%);
+  border-left: var(--pop-arrow) solid transparent;
+  border-right: var(--pop-arrow) solid transparent;
+  border-bottom: var(--pop-arrow) solid var(--pop-accent);
+}
+.action-popover.anchor-right::after {
+  left: calc(-1 * var(--pop-arrow));
+  top: 50%;
+  transform: translateY(-50%);
+  border-top: var(--pop-arrow) solid transparent;
+  border-bottom: var(--pop-arrow) solid transparent;
+  border-right: var(--pop-arrow) solid var(--pop-accent);
+}
+.action-popover.anchor-left::after {
+  right: calc(-1 * var(--pop-arrow));
+  top: 50%;
+  transform: translateY(-50%);
+  border-top: var(--pop-arrow) solid transparent;
+  border-bottom: var(--pop-arrow) solid transparent;
+  border-left: var(--pop-arrow) solid var(--pop-accent);
 }
 /* 统一时间轴（总 2200ms）：0–80ms scale 1.8、opacity 0.35→1；80–320ms 保持 1.8；
    320–920ms（600ms）缩回 1.0；920–1980ms 停留；1980–2200ms 淡出。百分比按 2200ms 换算。 */
@@ -1035,40 +1115,90 @@ select {
   }
 }
 
-/* ---------- 桌沿徽章：本街下注（本轮醒目 + 累计次要小字），落在护栏内侧外围带 ---------- */
-.rim-marks {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 1;
-}
+/* ---------- 座位外侧下注附属条：本轮（一级强调）/累计（次级可读） ----------
+   挂在 .seat-slot 下、与 .seat 同级；方向（is-up/down/left/right）只由槽位 dx/dy 决定。
+   浅圆角弱边框附属条，不再是黑色胶囊+金边+筹码图标；上/下方向一行、左/右方向两行。 */
+/* 浅色弱边框附属条：本轮金额一级强调、累计次级可读；去掉深色胶囊+金边+筹码图标感。 */
 .rim-mark {
   position: absolute;
-  transform: translate(-50%, -50%);
-  display: flex;
-  align-items: center;
+  z-index: 5;
+  display: inline-flex;
+  align-items: baseline;
   gap: 5px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  background: rgba(6, 12, 10, 0.82);
-  border: 1px solid rgba(201, 164, 76, 0.28);
-  box-shadow: 0 5px 14px -7px rgba(0, 0, 0, 0.95);
+  padding: 3px 9px;
+  border-radius: 9px;
+  background: rgba(238, 234, 223, 0.92);
+  border: 1px solid rgba(43, 47, 41, 0.22);
+  box-shadow: 0 5px 12px -8px rgba(0, 0, 0, 0.8);
   font-family: var(--font-num);
   font-size: 11px;
-  color: var(--ink);
+  line-height: 1.35;
+  color: #33382f;
   white-space: nowrap;
-  /* 专用入场动画：终态保持 translate(-50%,-50%)，确保 left/top 定位点即徽章中心。
-     （通用 badge-in 的终态是 translate(-50%,0)，会把徽章下移半高，破坏定位计算。） */
-  animation: rim-mark-in 0.28s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+  pointer-events: none;
+  /* 仅淡入、不含 transform，避免覆盖各方向用于锚定的 translate。 */
+  animation: rim-bar-in 0.28s cubic-bezier(0.2, 0.8, 0.3, 1) both;
 }
 .rim-mark .rim-now {
-  color: var(--gold-soft);
-  font-weight: 600;
+  color: #171b12;
+  font-weight: 700;
 }
 .rim-mark .rim-cum {
-  color: var(--faint);
+  color: #6a7167;
   font-size: 10px;
 }
+/* 上/下方向：单行、水平居中；紧贴座位卡，越过行动状态标签的独立位置（上 -15 / 下 -17）。 */
+.rim-mark.is-up {
+  left: 50%;
+  bottom: calc(100% + 19px);
+  transform: translateX(-50%);
+}
+.rim-mark.is-down {
+  left: 50%;
+  top: calc(100% + 21px);
+  transform: translateX(-50%);
+}
+/* 上/下方向一行：本轮与累计用「·」分隔。 */
+.rim-mark.is-up .rim-cum::before,
+.rim-mark.is-down .rim-cum::before {
+  content: "·";
+  margin-right: 5px;
+  color: #9aa096;
+}
+/* 左/右方向：两行、宽度趋近 80-100px；自牌背最外边缘起算间隙（牌背外探 ~14 + 余量）。 */
+.rim-mark.is-left,
+.rim-mark.is-right {
+  top: 50%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 84px;
+  transform: translateY(-50%);
+}
+.rim-mark.is-left {
+  right: calc(100% + 21px);
+}
+.rim-mark.is-right {
+  left: calc(100% + 21px);
+}
+/* 窄桌面紧凑化：只收内边距/圆角，不缩字号。 */
+.is-tight .rim-mark {
+  padding: 2px 6px;
+  border-radius: 7px;
+}
+/* 顶部相邻「上向」下注条横向放不下完整一行条（本轮 + 累计）时的紧凑化：
+   只保留「本轮」金额、累计折叠进元素 title；收字号/内边距。
+   与列表布局解耦——桌面宽度不因顶部拥挤而切列表，下注条仍在外侧贴座位、不遮挡不重叠。 */
+.stage.is-top-cramped .rim-mark.is-up {
+  padding: 2px 6px;
+  border-radius: 7px;
+  font-size: 10px;
+  gap: 0;
+}
+.stage.is-top-cramped .rim-mark.is-up .rim-cum {
+  display: none;
+}
+
 
 /* 配置页中的真人座位行 */
 .seat-row.is-human {
@@ -1095,7 +1225,7 @@ select {
 
 /* ---------- 主舞台：牌桌居中 + 操作条紧贴其正下方 ---------- */
 /* play-layout 宽度 = 牌桌宽度；牌桌水平居中，操作条作为其下方一条横带。
-   ≤720px 走移动端堆叠（见文末媒体查询），此处只管桌面/平板。 */
+   ≤780px 走列表堆叠（窄桌面提前退化；≤720px 移动端行为不变），此处只管更宽桌面/平板。 */
 .play-layout {
   width: 100%;
   margin: 0 auto;
@@ -1103,9 +1233,9 @@ select {
 
 /* 桌面/平板按视口高度反推牌桌最大宽度，使「牌桌 + 操作条」一屏内放下：
    stage 宽高比 16/8.8 → 宽 = 高 × 1.818；预留顶栏/状态栏/操作条/间距的高度。
-   本轮同步压缩了操作区高度（见 .hand-dock），故高度预算从 360 降到 290，
-   牌桌随之放大约 10-12%。上限 1440px 与 .stage 对齐；座位由 PokerTable 依实测尺寸自适应。 */
-@media (min-width: 721px) {
+    本轮同步压缩了操作区高度（见 .hand-dock），故高度预算从 360 降到 290，
+    牌桌随之放大约 10-12%。上限 1440px 与 .stage 对齐；座位由 PokerTable 依实测尺寸自适应。 */
+@media (min-width: 781px) {
   .play-layout {
     max-width: clamp(620px, calc((100vh - 290px) * 1.818), 1440px);
   }
@@ -1498,15 +1628,13 @@ select {
     transform: translate(-50%, 0) scale(1);
   }
 }
-/* 桌沿徽章专用：保持中心锚定（终态 translate(-50%,-50%)），与定位点语义一致。 */
-@keyframes rim-mark-in {
+/* 座位外侧下注条：仅淡入，不动 transform（各方向用 translate 锚定）。 */
+@keyframes rim-bar-in {
   from {
     opacity: 0;
-    transform: translate(-50%, calc(-50% + 4px)) scale(0.9);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
   }
 }
 /* ---------- 扑克牌 ---------- */
@@ -1956,160 +2084,164 @@ select {
   }
 }
 
-/* 窄屏：牌桌改为纵向堆叠，座位变网格，避免椭圆缩小到不可读 */
-@media (max-width: 720px) {
-  .stage {
-    aspect-ratio: auto;
-    display: block;
-  }
-  .rail {
-    position: relative;
-    inset: auto;
-    width: 100%;
-    aspect-ratio: 4 / 3;
-    border-radius: 26px;
-    padding: 8px;
-    margin-bottom: 46px;
-  }
-  .rail::before {
-    border-radius: 20px;
-  }
-  .felt {
-    border-radius: 20px;
-  }
-  .center {
-    padding: 0 8%;
-  }
-  /* 移动端没有桌沿层：下注信息回到座位卡内显示。 */
-  .rim-marks {
-    display: none;
-  }
-  .seats {
-    position: static;
-    inset: auto;
-    display: grid;
-    /* 单列：两列时列宽不足以容纳 1.8 倍最大动作标签，按方案改一列（改排布不改强度）。 */
-    grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
-    pointer-events: auto;
-  }
-  .seat-slot {
-    position: relative;
-    left: auto !important;
-    top: auto !important;
-    transform: none;
-    width: 100%;
-    /* 移动端改排布不改强度：为 1.8 倍动作标签预留独立高度（含双行），不挤占座位卡内的 .bet。 */
-    padding-bottom: 156px;
-  }
-  /* 网格布局下四种动作标签统一贴 seat-slot 底部居中，缩放原点顶部居中，
-     放大时向下/两侧扩展在预留行内；仍保持 --pop-scale: 1.8，不降级特效强度。 */
-  .action-popover.is-above-left,
-  .action-popover.is-above-right,
-  .action-popover.is-above-center,
-  .action-popover.is-right {
-    left: 50%;
-    right: auto;
-    top: auto;
-    bottom: 2px;
-    translate: -50% 0;
-    transform-origin: center top;
-    max-width: min(180px, 100%);
-  }
-  /* 网格流式布局：高度自适应，容纳底牌与下注行。 */
-  .seat {
-    width: 100%;
-    height: auto;
-    margin-top: 22px;
-  }
-  /* 移动端放宽模型短名：字号 11px、max-width 约 120px。 */
-  .seat .seat-model {
-    font-size: 11px;
-    max-width: 120px;
-  }
-  .seat .bet {
-    display: inline-flex;
-  }
-  .seat .hole {
-    left: 8px;
-    top: -18px;
-  }
-  /* 本人底牌仍居中于信息条上方 */
-  .seat .hole.hole-open {
-    left: 50%;
-    top: auto;
-  }
-  .mini-card {
-    width: 18px;
-    height: 25px;
-  }
-  /* 移动端操作条：紧贴牌桌下方，正常流式（非吸附），不遮挡牌桌座位 */
-  .hand-dock {
-    padding: 9px 12px 10px;
-    border-radius: 14px;
-  }
-  .dock-turn {
-    min-height: 24px;
-  }
-  .dock-turn .turn-who {
-    max-width: 100%;
-  }
-  .countdown {
-    font-size: 18px;
-    min-width: 56px;
-  }
-  /* 移动端各自成行堆叠：状态行 / 直接动作行 / 加注组行 / 快捷注行；
-     触控目标不因桌面压缩而变小（按钮 ≥44px）。 */
-  .action-body {
-    gap: 6px;
-  }
-  .action-main {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-  }
-  .action-buttons {
-    gap: 8px;
-  }
-  .action-buttons .btn {
-    flex: 1 1 auto;
-    min-width: 0;
-    min-height: 44px;
-  }
-  .raise-control {
-    width: 100%;
-  }
-  .raise-control .input {
-    flex: 1 1 120px;
-    width: auto;
-    min-height: 44px;
-  }
-  .raise-control .btn {
-    min-height: 44px;
-  }
-  /* 六个快捷注尽量一行排下（窄到放不下时自动换行）。 */
-  .quick-bets {
-    gap: 6px;
-  }
-  .quick-bet {
-    flex: 1 1 calc(16.666% - 5px);
-    min-width: 0;
-    min-height: 40px;
-    padding: 4px 6px;
-  }
-  .quick-bet .qb-ratio {
-    font-size: 12px;
-  }
-  .play-meta {
-    grid-template-columns: minmax(0, 1fr);
-    max-width: none;
-  }
-  .action-feed {
-    max-height: 240px;
-  }
-  .container {
-    padding-bottom: 24px;
-  }
+/* 列表布局（窄桌面/移动端）：PokerTable 依实测 stage 宽度在空间不足时给 .stage 加 .is-list
+   （提前退化，不靠缩字号、不动态挪徽章躲碰撞）。表内规则限定在 .stage.is-list；
+   操作条/次要面板等 stage 外层用 .play-layout:has(.stage.is-list) 关联。≤720 移动端行为不变。 */
+.stage.is-list {
+  aspect-ratio: auto;
+  display: block;
+}
+.stage.is-list .rail {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 26px;
+  padding: 8px;
+  margin-bottom: 46px;
+}
+.stage.is-list .rail::before {
+  border-radius: 20px;
+}
+.stage.is-list .felt {
+  border-radius: 20px;
+}
+.stage.is-list .center {
+  padding: 0 8%;
+}
+/* 列表布局没有外侧附属条：下注信息回到座位卡内显示。 */
+.stage.is-list .rim-mark {
+  display: none;
+}
+.stage.is-list .seats {
+  position: static;
+  inset: auto;
+  display: grid;
+  /* 单列：两列时列宽不足以容纳 1.8 倍最大动作标签，按方案改一列（改排布不改强度）。 */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  pointer-events: auto;
+}
+.stage.is-list .seat-slot {
+  position: relative;
+  left: auto !important;
+  top: auto !important;
+  transform: none;
+  width: 100%;
+  /* 改排布不改强度：为 1.8 倍动作标签预留独立高度（含双行），不挤占座位卡内的 .bet。 */
+  padding-bottom: 156px;
+}
+/* 网格布局下四种动作标签统一贴 seat-slot 底部居中，缩放原点顶部居中，
+   放大时向下/两侧扩展在预留行内；仍保持 --pop-scale: 1.8，不降级特效强度。 */
+.stage.is-list .action-popover.is-above-left,
+.stage.is-list .action-popover.is-above-right,
+.stage.is-list .action-popover.is-above-center,
+.stage.is-list .action-popover.is-right {
+  left: 50%;
+  right: auto;
+  top: auto;
+  bottom: 2px;
+  translate: -50% 0;
+  transform-origin: center top;
+  max-width: min(180px, 100%);
+}
+/* 列表布局为整行堆叠、标签统一贴槽底部，不使用贴边尖角（避免指向不存在的侧向卡片）。 */
+.stage.is-list .action-popover::after {
+  display: none;
+}
+/* 网格流式布局：高度自适应，容纳底牌与下注行。 */
+.stage.is-list .seat {
+  width: 100%;
+  height: auto;
+  margin-top: 22px;
+}
+/* 放宽模型短名：字号 11px、max-width 约 120px。 */
+.stage.is-list .seat .seat-model {
+  font-size: 11px;
+  max-width: 120px;
+}
+.stage.is-list .seat .bet {
+  display: inline-flex;
+}
+.stage.is-list .seat .hole {
+  left: 8px;
+  top: -18px;
+}
+/* 本人底牌仍居中于信息条上方 */
+.stage.is-list .seat .hole.hole-open {
+  left: 50%;
+  top: auto;
+}
+.stage.is-list .mini-card {
+  width: 18px;
+  height: 25px;
+}
+/* 操作条：紧贴牌桌下方，正常流式（非吸附），不遮挡牌桌座位。
+   注意：不改 .play-layout 宽度——否则「列表判定 → 宽度变化 → 判定反转」会抖动。 */
+.play-layout:has(.stage.is-list) .hand-dock {
+  padding: 9px 12px 10px;
+  border-radius: 14px;
+}
+.play-layout:has(.stage.is-list) .dock-turn {
+  min-height: 24px;
+}
+.play-layout:has(.stage.is-list) .dock-turn .turn-who {
+  max-width: 100%;
+}
+.play-layout:has(.stage.is-list) .countdown {
+  font-size: 18px;
+  min-width: 56px;
+}
+/* 各自成行堆叠：状态行 / 直接动作行 / 加注组行 / 快捷注行；触控目标不因压缩而变小（≥44px）。 */
+.play-layout:has(.stage.is-list) .action-body {
+  gap: 6px;
+}
+.play-layout:has(.stage.is-list) .action-main {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.play-layout:has(.stage.is-list) .action-buttons {
+  gap: 8px;
+}
+.play-layout:has(.stage.is-list) .action-buttons .btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+}
+.play-layout:has(.stage.is-list) .raise-control {
+  width: 100%;
+}
+.play-layout:has(.stage.is-list) .raise-control .input {
+  flex: 1 1 120px;
+  width: auto;
+  min-height: 44px;
+}
+.play-layout:has(.stage.is-list) .raise-control .btn {
+  min-height: 44px;
+}
+/* 六个快捷注尽量一行排下（窄到放不下时自动换行）。 */
+.play-layout:has(.stage.is-list) .quick-bets {
+  gap: 6px;
+}
+.play-layout:has(.stage.is-list) .quick-bet {
+  flex: 1 1 calc(16.666% - 5px);
+  min-width: 0;
+  min-height: 40px;
+  padding: 4px 6px;
+}
+.play-layout:has(.stage.is-list) .quick-bet .qb-ratio {
+  font-size: 12px;
+}
+.container:has(.stage.is-list) .play-meta {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: none;
+}
+.container:has(.stage.is-list) .action-feed {
+  max-height: 240px;
+}
+.container:has(.stage.is-list) {
+  padding-bottom: 24px;
 }
 
 /* ============================================================
@@ -2243,10 +2375,6 @@ select {
 /* ============================================================
    谁赢了结算（Task 2）：摊牌翻牌 / 赢家金边 / 赢家标签 / 筹码飞行
    ============================================================ */
-.rim-marks.is-settling {
-  opacity: 0;
-  transition: opacity 0.25s;
-}
 .seat.is-settling {
   transition: border-color 0.3s, box-shadow 0.45s, opacity 0.3s;
 }
@@ -2519,27 +2647,25 @@ select {
   margin-top: 2px;
 }
 
-@media (max-width: 720px) {
-  .street-label {
-    width: 94%;
-  }
-  .settlement-bar {
-    margin-top: 8px;
-  }
-  /* 移动端座位槽为整行宽：赢家标签改为居中覆盖座位卡，避免 is-right 越出视口。 */
-  .winner-tag.is-above-left,
-  .winner-tag.is-above-right,
-  .winner-tag.is-above-center,
-  .winner-tag.is-right {
-    left: 50%;
-    right: auto;
-    top: 50%;
-    bottom: auto;
-    translate: -50% -50%;
-    transform-origin: center center;
-    white-space: normal;
-    max-width: calc(100% - 20px);
-  }
+.stage.is-list .street-label {
+  width: 94%;
+}
+.play-layout:has(.stage.is-list) .settlement-bar {
+  margin-top: 8px;
+}
+/* 列表布局座位槽为整行宽：赢家标签改为居中覆盖座位卡，避免 is-right 越出视口。 */
+.stage.is-list .winner-tag.is-above-left,
+.stage.is-list .winner-tag.is-above-right,
+.stage.is-list .winner-tag.is-above-center,
+.stage.is-list .winner-tag.is-right {
+  left: 50%;
+  right: auto;
+  top: 50%;
+  bottom: auto;
+  translate: -50% -50%;
+  transform-origin: center center;
+  white-space: normal;
+  max-width: calc(100% - 20px);
 }
 
 @media (prefers-reduced-motion: reduce) {

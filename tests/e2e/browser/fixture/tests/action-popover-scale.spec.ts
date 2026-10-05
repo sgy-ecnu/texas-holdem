@@ -254,31 +254,35 @@ test('桌面：展开方向 transform-origin（左半/右半/顶部/真人）', 
   await expect(page.getByText('真人视角')).toBeVisible()
   await page.waitForTimeout(500)
 
-  // 左半 seat1：origin right bottom。
+  // 左半 seat1（正左座位 L）：贴卡片右侧、垂直居中，尖角朝左指向卡片；origin left center。
   state.action = act(1, 2, 1, 'check')
   await expect(page.locator('.seat-slot[data-seat="1"] .action-popover')).toHaveText('过牌', { timeout: 4000 })
   const left = await popMetrics(page, 1)
-  expect(left!.originX).toBeCloseTo(left!.width, 0)
-  expect(left!.originY).toBeCloseTo(left!.height, 0)
+  expect(left!.className).toContain('anchor-right')
+  expect(left!.originX).toBeCloseTo(0, 0)
+  expect(left!.originY).toBeCloseTo(left!.height / 2, 0)
 
-  // 顶部 seat2：origin center bottom。
+  // 顶部 seat2：标签贴卡片下沿居中、尖角朝上（向下朝桌内展开，避免压上方常驻下注条），origin center top。
   state.action = act(1, 3, 2, 'check')
   await expect(page.locator('.seat-slot[data-seat="2"] .action-popover')).toHaveText('过牌', { timeout: 4000 })
   const top = await popMetrics(page, 2)
+  expect(top!.className).toContain('anchor-below')
   expect(top!.originX).toBeCloseTo(top!.width / 2, 0)
-  expect(top!.originY).toBeCloseTo(top!.height, 0)
+  expect(top!.originY).toBeCloseTo(0, 0)
 
-  // 右半 seat3：origin left bottom。
+  // 右半 seat3（正右座位 R）：贴卡片左侧、垂直居中，尖角朝右指向卡片；origin right center。
   state.action = act(1, 4, 3, 'check')
   await expect(page.locator('.seat-slot[data-seat="3"] .action-popover')).toHaveText('过牌', { timeout: 4000 })
   const right = await popMetrics(page, 3)
-  expect(right!.originX).toBeCloseTo(0, 0)
-  expect(right!.originY).toBeCloseTo(right!.height, 0)
+  expect(right!.className).toContain('anchor-left')
+  expect(right!.originX).toBeCloseTo(right!.width, 0)
+  expect(right!.originY).toBeCloseTo(right!.height / 2, 0)
 
-  // 真人 seat0：origin left center。
+  // 真人 seat0（底部）：贴卡片右侧、垂直居中，尖角朝左指向卡片；origin left center。
   state.action = act(1, 5, 0, 'raise_to', 300)
   await expect(page.locator('.seat-slot[data-seat="0"] .action-popover')).toHaveText('加注到 300', { timeout: 4000 })
   const human = await popMetrics(page, 0)
+  expect(human!.className).toContain('anchor-right')
   expect(human!.originX).toBeCloseTo(0, 0)
   expect(human!.originY).toBeCloseTo(human!.height / 2, 0)
 

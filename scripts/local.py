@@ -904,7 +904,7 @@ def server_listener_identity(pid):
                    any(token in " ".join(argv) for token in ("cmd/server", "texas-holdem")))
     except (SafeError, OSError):
         raise SafeError("STALE_SERVER_UNKNOWN_PROCESS_MANUAL")
-    require(cache == exe or cache in exe.parents or "go-build" in exe.parts,
+    require(cache == exe or cache in exe.parents or any(p.startswith("go-build") for p in exe.parts),
             "STALE_SERVER_UNKNOWN_PROCESS_MANUAL")
     require(argv_ok, "STALE_SERVER_UNKNOWN_PROCESS_MANUAL")
     after = process_snapshot(pid)

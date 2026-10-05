@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { chips } from '../format'
 import {
   bestFiveBreakdown,
@@ -10,7 +10,7 @@ import {
   type SettlementPhase,
 } from '../settlement'
 import type { CompletedHandDTO, GameDTO, ModelDTO, PlayerDTO, PlayerDTOView } from '../types'
-import { ActionPopover, type ActionHint, type ActionPlacement } from './ActionPopover'
+import { ActionPopover, type ActionAnchor, type ActionHint, type ActionPlacement } from './ActionPopover'
 import { PlayingCard } from './PlayingCard'
 import { Seat } from './Seat'
 import { StreetTrack } from './StreetTrack'
@@ -79,52 +79,94 @@ const TEMPLATES: Record<number, Slot[]> = {
   9: [B, L2L, L2U, T4L, T4ML, T4MR, T4R, R2U, R2L],
 }
 
-// 下注徽章（.rim-mark）定位所需固定像素尺寸（与 styles.css 对齐，不随 stage 缩放）：
-// 座位卡 140×58；真人明牌 .hole-open .card 宽 42、高约 58.8，底边在座位卡上方 7px。
+// 座位卡固定像素尺寸（与 styles.css 对齐，不随 stage 缩放）：140×58。
 const SEAT_HALF_W = 70
 const SEAT_HALF_H = 29
-// 真人明牌自座位中心向上的突出：29(卡半高) + 7(缝隙) + 58.8(明牌高) ≈ 95，取 96 留余量。
-const OPEN_HOLE_UP = 96
-const MARK_HALF_H = 12
-const MARK_GAP = 6
-// 未测到徽章实际宽度前的保守半宽；测得后按实际 offsetWidth/2 精确定位。
-const MARK_HALF_W_DEFAULT = 90
-// 护栏（.felt）椭圆半径：felt 宽 = 86.8% stage 宽；高 = 89% stage 高 − 2.2% stage 宽
-// （.rail padding 百分比按包含块宽度计算），故半径分别为 0.434W、(0.445H − 0.011W)。
-const FELT_RX_FRAC = 0.434
+// 椭圆布局下座位卡的「整卡宽度」与「窄桌面紧凑宽度」。
+// 顶部相邻座位横向间距小于整卡宽 → 卡会重叠：先切紧凑宽度（.is-narrow-seats），
+// 紧凑后仍放不下才退化为列表；桌面宽度不再因「顶部下注条」而切列表。
+const SEAT_W_FULL = SEAT_HALF_W * 2 // 140
+const SEAT_W_COMPACT = 108
+// 座位外侧下注附属条的外围包络（自座位卡边到条的「外缘」）。
+// 侧向：AI 牌背外探 ~14px + 间隙 ~7px + 两行条宽上限 ~110px ≈ 131（含最长金额）。
+// 纵向：行动状态标签/留白 ~19px + 单行条高 ~24px + 余量 ≈ 54。
+// 用于把椭圆半径内收，给「座位卡+底牌+下注条+行动标签」的组合包络留出真实可测的外围空间。
+const ENVELOPE_SIDE = 131
+// 仅上/下向（无侧向座位）时的横向包络：座位卡边 + AI 牌背外探/间隙，无需为侧向两行条预留。
+const ENVELOPE_SIDE_NONE = 21
+const ENVELOPE_VERT = 54
+// 横向可借用的 stage→视口余量上限（超过则触发紧凑化，不靠缩字号）。
+const SLACK_X_MAX = 110
+// 窄桌面紧凑化阈值（stage 实测宽度，px）。
+const TIGHT_STAGE_W = 1000
+// 顶部相邻「上向」下注条放不下一行「完整条（本轮 + 累计）」的阈值（约 160px）。
+// 相邻间距由当前人数的实际槽位模板算出（见 minTopNeighborDx）：
+// 人少时顶部座位稀疏、间距大，8/9 人顶部密集（T3/T4）才可能触发。
+// 触发时只让顶部下注条自身紧凑化（隐藏累计、收字号/内边距），绝不据此切整个列表布局。
+const TOP_GAP_MIN = 160
+// 极窄 stage（移动端）直接退化为列表布局的阈值；此外仅当「椭圆座位卡无法避免重叠」
+// （seatsCollide，见 geometry）才切列表。桌面宽度下的顶部下注条拥挤只做紧凑化，不切列表。
+const LIST_MIN_STAGE_W = 520
+
+// 外侧下注条方向：仅由槽位 dx/dy 决定（与金额/行动状态无关）。
+// |dx| > 1.25×|dy| → 左/右；否则 → 上/下（临界优先上下）。
+// 正上/左上/右上 → 上；正左/左 → 左；正右/右 → 右；左下/右下/正下 → 下。
+type BarDir = 'up' | 'down' | 'left' | 'right'
+function barDir(s: Slot): BarDir {
+  if (Math.abs(s.dx) > Math.abs(s.dy) * 1.25) return s.dx < 0 ? 'left' : 'right'
+  return s.dy < 0 ? 'up' : 'down'
+}
+
+// 当前座位集里「上向」下注条相邻槽位的最小水平间距（归一化 dx）。
+// 顶部只有 0/1 个上向座位（2/4 人）时返回 Infinity（永不触发顶部拥挤退化）；
+// 6 人 UL/T/UR 间距 0.72、7 人 T2L/T2R 0.72、8 人 T3 三座 0.46、9 人 T4 四座 0.37。
+function minTopNeighborDx(slots: Slot[]): number {
+  const dxs = slots
+    .filter((s) => barDir(s) === 'up')
+    .map((s) => s.dx)
+    .sort((a, b) => a - b)
+  let min = Infinity
+  for (let i = 1; i < dxs.length; i++) min = Math.min(min, dxs[i] - dxs[i - 1])
+  return min
+}
+
+// 是否存在侧向（左/右向）下注条座位：只有此时才需要为侧向两行条预留 131px 外侧包络，
+// 否则该横向上限会无谓压缩椭圆半径（如 2/3/6 人，顶部/底部座位不需要横向包络）。
+function hasSideBars(slots: Slot[]): boolean {
+  return slots.some((s) => {
+    const d = barDir(s)
+    return d === 'left' || d === 'right'
+  })
+}
 
 // 椭圆牌桌：中央公共牌/底池；桌沿徽章；外圈座位卡。
 export function PokerTable({ game, models, player = null, hints, onHintDone, settlement = null }: Props) {
   const hand = game.hand
-  // 实测 stage 尺寸，用于把槽位映射到实际像素、避免窄屏溢出。
+  // 实测 stage 尺寸，以及 stage 到视口左右边的真实余量（用于把外侧下注条放进容器留白，
+  // 而非硬编码固定值；余量随视口真实变化）。
   const stageRef = useRef<HTMLDivElement | null>(null)
-  const [stageSize, setStageSize] = useState({ w: 0, h: 0 })
+  const [stageSize, setStageSize] = useState({ w: 0, h: 0, slackX: 0 })
   useEffect(() => {
     const el = stageRef.current
     if (!el) return
-    const measure = () => setStageSize({ w: el.clientWidth, h: el.clientHeight })
+    const measure = () => {
+      const rect = el.getBoundingClientRect()
+      const slackX = Math.max(0, Math.min(rect.left, window.innerWidth - rect.right))
+      setStageSize((prev) =>
+        prev.w === el.clientWidth && prev.h === el.clientHeight && prev.slackX === slackX
+          ? prev
+          : { w: el.clientWidth, h: el.clientHeight, slackX },
+      )
+    }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
-    return () => ro.disconnect()
+    window.addEventListener('resize', measure)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', measure)
+    }
   }, [])
-
-  // 下注徽章层与各座位徽章实测宽度：宽度决定水平推出距离，读一次真实 offsetWidth 即可确定性收敛。
-  const marksRef = useRef<HTMLDivElement | null>(null)
-  const [markWidths, setMarkWidths] = useState<Map<number, number>>(new Map())
-  useLayoutEffect(() => {
-    const root = marksRef.current
-    if (!root) return
-    const next = new Map<number, number>()
-    root.querySelectorAll<HTMLElement>('.rim-mark').forEach((el) => {
-      const raw = el.dataset.seat
-      if (raw != null) next.set(Number(raw), el.offsetWidth)
-    })
-    setMarkWidths((prev) => {
-      if (prev.size === next.size && [...next].every(([seat, w]) => prev.get(seat) === w)) return prev
-      return next
-    })
-  })
 
   const modelByRef = useMemo(() => {
     const map = new Map<string, ModelDTO>()
@@ -194,55 +236,39 @@ export function PokerTable({ game, models, player = null, hints, onHintDone, set
     return slotBySeat
   }, [game.seats, humanSeat])
 
-  // 槽位 → stage 百分比的坐标；半径依实测尺寸自适应（窄屏自动收，避免溢出/重叠）。
+  // 槽位 → stage 百分比的坐标；半径依实测尺寸自适应，并为外侧下注条预留外围包络。
   const geometry = useMemo(() => {
     const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
     const W = stageSize.w
     const H = stageSize.h
-    // 座位卡半宽/半高（含少量余量），用于把卡心推到尽量靠外而不过度溢出 stage。
-    const HALF_X = 72
-    const HALF_Y = 42
-    const MARGIN_X = 22 // 允许的横向溢出像素（落在容器左右内边距内，不产生横向滚动）
-    const MARGIN_Y = 4 // 允许的纵向溢出像素（落在牌桌与操作条之间的间隙内）
-    const RX =
-      W > 0 ? clamp(((W / 2 - HALF_X + MARGIN_X) / W) * 100, 30, 47) : 46
-    const RY =
-      H > 0 ? clamp(((H / 2 - HALF_Y + MARGIN_Y) / H) * 100, 28, 45) : 44
+    const slots = [...layout.values()]
+    // 座位中心到组合包络外缘的距离：座位卡半尺寸 + 外侧下注条包络。
+    // 侧向包络仅在存在侧向座位时计入，避免 2/3/6 人局被无谓压缩椭圆半径（桌子偏小）。
+    const HALF_X = SEAT_HALF_W + (hasSideBars(slots) ? ENVELOPE_SIDE : ENVELOPE_SIDE_NONE)
+    const HALF_Y = SEAT_HALF_H + ENVELOPE_VERT
+    // 横向借用 stage 到视口边的真实余量（上限 SLACK_X_MAX），让桌子尽量大又不产生横向滚动。
+    const slackX = W > 0 ? Math.min(stageSize.slackX, SLACK_X_MAX) : 0
+    const MARGIN_Y = 4
+    const RX = W > 0 ? clamp(((W / 2 - HALF_X + slackX) / W) * 100, 26, 47) : 44
+    const RY = H > 0 ? clamp(((H / 2 - HALF_Y + MARGIN_Y) / H) * 100, 26, 45) : 42
     const seatAt = (s: Slot) => ({ cx: 50 + s.dx * RX, cy: 50 + s.dy * RY })
-    // 桌沿徽章（本轮下注）定位：从座位中心沿「指向桌心」的轴对齐方向推出，直到
-    // 座位卡（含真人明牌）与徽章沿该轴完全分离，并确保护栏（felt）内侧。
-    // 轴对齐（顶点/底点竖推、侧点横推）保证相邻徽章在另一轴的间距不被缩短、彼此不叠压。
-    const rimAt = (s: Slot, openHole: boolean, halfW: number) => {
-      // 尚未测得 stage 尺寸时的初始占位（首帧后即被实测值覆盖）。
-      const t = s.dy > 0.9 ? 0.62 : 0.85
-      if (W <= 0 || H <= 0) return { cx: 50 + s.dx * t * RX, cy: 50 + s.dy * t * RY }
-      const sx = ((50 + s.dx * RX) / 100) * W
-      const sy = ((50 + s.dy * RY) / 100) * H
-      let ax = 0
-      let ay = 0
-      if (s.dy > 0.9) ay = -1 // 正下方 → 向上收
-      else if (s.dy < -0.9) ay = 1 // 正上方 → 向下收
-      else if (Math.abs(s.dx) > Math.abs(s.dy) * 1.25) ax = s.dx < 0 ? 1 : -1 // 偏侧 → 水平收
-      else ay = s.dy < 0 ? 1 : -1 // 偏上/偏下 → 垂直收
-      let obstacle = ax !== 0 ? SEAT_HALF_W : SEAT_HALF_H
-      // 真人明牌在座位卡正上方：仅当向上推出时需额外越过明牌高度。
-      if (openHole && ay < 0) obstacle = Math.max(obstacle, OPEN_HOLE_UP)
-      const badgeHalf = ax !== 0 ? halfW : MARK_HALF_H
-      let dist = obstacle + badgeHalf + MARK_GAP
-      // 护栏内侧约束：把徽章中心（含自身半尺寸余量）推进 felt 椭圆内。
-      const fx = FELT_RX_FRAC * W
-      const fy = 0.445 * H - 0.011 * W
-      if (ax !== 0) {
-        const allowed = fx * Math.sqrt(Math.max(0, 1 - ((sy - H / 2) / fy) ** 2))
-        dist = Math.max(dist, Math.abs(sx - W / 2) - (allowed - halfW))
-      } else {
-        const allowed = fy * Math.sqrt(Math.max(0, 1 - ((sx - W / 2) / fx) ** 2))
-        dist = Math.max(dist, Math.abs(sy - H / 2) - (allowed - MARK_HALF_H))
-      }
-      return { cx: ((sx + ax * dist) / W) * 100, cy: ((sy + ay * dist) / H) * 100 }
-    }
-    return { seatAt, rimAt }
-  }, [stageSize.w, stageSize.h, markWidths])
+    // 顶部「上向」相邻槽位的水平像素间距（归一化 dx × 横向半径）。
+    // 该间距同时决定两件事：下注条能否放下完整一行条、以及相邻座位卡是否会横向重叠。
+    const RXpx = (RX / 100) * W
+    const topDxPx = minTopNeighborDx(slots) * RXpx
+    // (1) 顶部下注条放不下完整一行条（本轮 + 累计）→ 只紧凑化下注条（隐藏累计），绝不切列表。
+    const topCramped = W > 0 && topDxPx < TOP_GAP_MIN
+    // (2) 座位卡横向重叠是「真窄屏」才切列表的唯一几何依据（与下注条无关）：
+    //     间距放不下整卡 → 先切紧凑宽度窗位；紧凑后仍放不下 → 退化为列表单列。
+    const ovalSeatW = topDxPx < SEAT_W_FULL ? SEAT_W_COMPACT : SEAT_W_FULL
+    const seatsCollide = W > 0 && topDxPx < ovalSeatW
+    // 列表布局只由「真窄屏退化」触发：极窄 stage（移动端）或椭圆座位卡已无法避免重叠。
+    // 桌面宽度（1000px+ 视口）8/9 人在紧凑座位卡下仍保持椭圆。
+    const isList = W > 0 && (W < LIST_MIN_STAGE_W || seatsCollide)
+    // 窄桌面紧凑座位卡：椭圆布局且需收窄才不重叠时启用（不改高度、不缩特效）。
+    const narrowSeats = !isList && W > 0 && ovalSeatW === SEAT_W_COMPACT
+    return { seatAt, stageW: W, isList, topCramped, narrowSeats }
+  }, [stageSize.w, stageSize.h, stageSize.slackX, layout])
 
   const board = settled ? settled.board : (hand?.board ?? [])
   const potValue = settled ? settled.pots.reduce((sum, p) => sum + p.amount, 0) : (hand?.pot ?? 0)
@@ -253,7 +279,11 @@ export function PokerTable({ game, models, player = null, hints, onHintDone, set
   const trackHandNo = settled ? settled.hand_no : (hand?.number ?? null)
 
   return (
-    <div className={`stage${settling ? ' is-settling' : ''}`} data-settlement={settlement?.phase ?? 'idle'} ref={stageRef}>
+    <div
+      className={`stage${settling ? ' is-settling' : ''}${geometry.isList ? ' is-list' : ''}${geometry.narrowSeats ? ' is-narrow-seats' : ''}${geometry.topCramped ? ' is-top-cramped' : ''}${stageSize.w > 0 && stageSize.w < TIGHT_STAGE_W ? ' is-tight' : ''}`}
+      data-settlement={settlement?.phase ?? 'idle'}
+      ref={stageRef}
+    >
       <div className="rail">
         <div className="felt">
           <div className="table-word">Texas Hold'em</div>
@@ -287,36 +317,12 @@ export function PokerTable({ game, models, player = null, hints, onHintDone, set
         </div>
       </div>
 
-      {/* 桌沿层：本街下注徽章；结算期间整体淡出，只保留该手结算快照。 */}
-      <div className={`rim-marks${settling ? ' is-settling' : ''}`} aria-hidden="true" ref={marksRef}>
-        {!settling &&
-          game.seats.map((seat) => {
-          const slot = layout.get(seat.seat)
-          const p = playerBySeat.get(seat.seat)
-          if (!slot || !p || (p.street_bet <= 0 && p.committed <= 0)) return null
-          // 本人座位且已发两张明牌时，徽章需越过明牌高度（观战视角无明牌，按普通座位处理）。
-          const openHole = viewerSeat === seat.seat && humanCards.length === 2
-          const halfW = (markWidths.get(seat.seat) ?? MARK_HALF_W_DEFAULT * 2) / 2
-          const pos = geometry.rimAt(slot, openHole, halfW)
-          return (
-            <div
-              className="rim-mark"
-              key={`rim-${seat.seat}`}
-              data-seat={seat.seat}
-              style={{ left: `${pos.cx}%`, top: `${pos.cy}%` }}
-            >
-              <span className="mini-chip" />
-              <span className="rim-now">本轮 {chips(p.street_bet)}</span>
-              {p.committed > 0 && <span className="rim-cum">累计 {chips(p.committed)}</span>}
-            </div>
-          )
-        })}
-      </div>
-
       <div className="seats">
         {game.seats.map((seat, i) => {
           const slot = layout.get(seat.seat) ?? B
           const pos = geometry.seatAt(slot)
+          // 外侧下注条方向：仅由槽位 dx/dy 决定，不随金额/行动状态变化。
+          const dir = barDir(slot)
           const playerState = playerBySeat.get(seat.seat) ?? null
           const isHuman = viewerSeat === seat.seat
           const isActor = !settling && actor === seat.seat
@@ -369,6 +375,10 @@ export function PokerTable({ game, models, player = null, hints, onHintDone, set
                 : slot.dx > 0.001
                   ? 'above-right'
                   : 'above-center'
+          // 动作标签锚定边（内侧固定贴边）：顶部座位贴卡片下沿居中（向下朝桌内展开）；
+          // 其余座位一律贴向桌心一侧，与外侧下注条方向相反——正左/左下/正下贴右侧、正右/右下贴左侧。
+          // 这样标签紧贴所属座位卡、尖角指向卡片，不再落进座位之间的同一片空隙。
+          const anchor: ActionAnchor = dir === 'up' ? 'below' : slot.dx > 0.001 ? 'left' : 'right'
           // 筹码向赢家飞：起点在牌桌中心，用相对座位的像素偏移表示。
           const flyX = stageSize.w > 0 ? ((50 - pos.cx) / 100) * stageSize.w : 0
           const flyY = stageSize.h > 0 ? ((50 - pos.cy) / 100) * stageSize.h : 0
@@ -378,6 +388,7 @@ export function PokerTable({ game, models, player = null, hints, onHintDone, set
               className={`seat-slot${isActor ? ' is-actor-slot' : ''}${hint ? ' has-hint' : ''}`}
               key={seat.seat}
               data-seat={seat.seat}
+              data-dir={dir}
               style={{ left: `${pos.cx}%`, top: `${pos.cy}%` }}
             >
               <Seat
@@ -401,6 +412,20 @@ export function PokerTable({ game, models, player = null, hints, onHintDone, set
                 finalStack={settled ? finalMap.get(seat.seat) ?? null : null}
                 index={i}
               />
+              {/* 座位外侧附属条：与 <Seat> 同级（不放进 .seat，避免跟随座位卡弱化透明度）。
+                  方向由槽位决定（is-up/down/left/right），紧贴座位表达归属、不加引导线、不重复名字。 */}
+              {!settling && playerState && (playerState.street_bet > 0 || playerState.committed > 0) && (
+                <div
+                  className={`rim-mark is-${dir}`}
+                  data-seat={seat.seat}
+                  data-dir={dir}
+                  title={`本轮 ${chips(playerState.street_bet)} · 累计 ${chips(playerState.committed)}`}
+                  aria-hidden="true"
+                >
+                  <span className="rim-now">本轮 {chips(playerState.street_bet)}</span>
+                  {playerState.committed > 0 && <span className="rim-cum">累计 {chips(playerState.committed)}</span>}
+                </div>
+              )}
               {showFly && (
                 <span
                   className="settle-chips"
@@ -429,6 +454,7 @@ export function PokerTable({ game, models, player = null, hints, onHintDone, set
                   key={hint.id}
                   hint={hint}
                   placement={place}
+                  anchor={anchor}
                   onDone={(id) => onHintDone?.(seat.seat, id)}
                 />
               )}
