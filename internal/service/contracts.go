@@ -25,6 +25,9 @@ type SeatConfig struct {
 	Stack    poker.Chips
 	ModelRef string
 	Kind     SeatKind
+	// UserID 是该真人座位的参与用户预留位，当前一律允许 nil；AI 座位必须为空。
+	// 只由可信认证上下文注入，绝不来自 JSON 请求字段，也不进入公共 SeatView/DTO/缓存。
+	UserID *string
 }
 type CreateGame struct {
 	Seats                []SeatConfig
@@ -36,6 +39,11 @@ type CreateGame struct {
 	// PlayerSessionHash 只由可信 HTTP 适配层注入，绝不来自 JSON 请求字段；
 	// 全 AI 创建必须为 nil，真人创建必须提供非零摘要。
 	PlayerSessionHash *PlayerSessionHash
+	// OwnerUserID/TemplateID/TemplateRevision 是牌局来源信息，由可信适配层注入，
+	// 绝不来自 JSON 请求字段；Engine.Create 会把它们移入私有 Record，不写入 Config。
+	OwnerUserID      *string
+	TemplateID       *string
+	TemplateRevision *uint64
 }
 type SeatView struct {
 	Seat           poker.Seat
@@ -143,6 +151,11 @@ type Record struct {
 	Snapshot  []byte
 	RequestID string
 	Sequence  uint64
+	// OwnerUserID/TemplateID/TemplateRevision 是牌局来源预留信息，只持久化在私有
+	// Record，绝不进入公共 DTO/Redis；一次性创建时均为 nil。
+	OwnerUserID      *string
+	TemplateID       *string
+	TemplateRevision *uint64
 	// 真人私有字段：会话摘要、本局有效超时、当前等待记录，均不得进入公共 DTO/Redis。
 	HumanSessionHash   *PlayerSessionHash
 	HumanActionTimeout time.Duration
@@ -204,3 +217,22 @@ func terminal(status string) bool {
 	return status == "stopped" || status == "completed" || status == "failed"
 }
 func text(s string) *string { return &s }
+
+// effectiveModelRef 返回座位当前的有效模型引用；旧记录引用缺失按保留值 "mock" 解释。
+func effectiveModelRef(c CreateGame, seat poker.Seat) string {
+	for _, p := range c.Seats {
+		if p.Seat == seat {
+			if p.ModelRef == "" {
+				return "mock"
+			}
+			return p.ModelRef
+		}
+	}
+	return "mock"
+}
+
+// isRealCall 是「按座位选模型」的唯一有效判定：
+// 真实调用 = mode==live 且当前座位 model_ref 非保留值 "mock"。其余一律走 MockDecider。
+func isRealCall(c CreateGame, seat poker.Seat) bool {
+	return c.Mode == "live" && effectiveModelRef(c, seat) != "mock"
+}

@@ -22,6 +22,8 @@ interface Props {
   models: ModelDTO[]
   health: HealthDTO | null
   onExit: () => void
+  // 进入观战时的附加提示（如「已创建、启动失败」）；成功进入为 null。
+  notice?: string | null
 }
 
 
@@ -31,7 +33,7 @@ interface StageProps extends Props {
 }
 
 // 单个视角的完整舞台。以 mode 作为 key 重建，切换视角时中止旧轮询、清空旧私牌。
-function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: StageProps) {
+function Stage({ initial, models, health, onExit, notice, mode, onSwitchToPublic }: StageProps) {
   const { game, problem, updatedAt, refresh, apply } = useGamePolling(initial.id, initial, mode, {
     onUnauthorized: onSwitchToPublic,
   })
@@ -226,6 +228,14 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
 
   return (
     <div className="container container-play">
+      {notice && (
+        <div className="banner warn" role="alert">
+          <span>
+            <span className="banner-title">提示：</span>
+            {notice}
+          </span>
+        </div>
+      )}
       {problem && (
         <div className={`banner ${problem.kind === 'unknown' ? 'warn' : 'error'}`} role="alert">
           <span>
@@ -446,7 +456,7 @@ function Stage({ initial, models, health, onExit, mode, onSwitchToPublic }: Stag
 
 // 视角选择：创建浏览器持有真人 Cookie 时尝试 /player；403 则退回公共观战。
 // 网络错误/503 保持真人视角并显示「状态未知」，绝不解释成「无真人权限」。
-export function SpectatorView({ initial, models, health, onExit }: Props) {
+export function SpectatorView({ initial, models, health, onExit, notice }: Props) {
   const [mode, setMode] = useState<PollMode>(() => (initial.human_seat !== null ? 'player' : 'public'))
   return (
     <Stage
@@ -455,6 +465,7 @@ export function SpectatorView({ initial, models, health, onExit }: Props) {
       models={models}
       health={health}
       onExit={onExit}
+      notice={notice}
       mode={mode}
       onSwitchToPublic={() => setMode('public')}
     />

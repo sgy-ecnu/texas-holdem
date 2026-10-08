@@ -2,11 +2,15 @@ import type {
   Command,
   CompletedHandDTO,
   CreateGameRequest,
+  CreateTableRequest,
   ErrorDTO,
   GameDTO,
   HealthDTO,
   HumanActionRequest,
   ModelsDTO,
+  TableDTO,
+  TableListDTO,
+  UpdateTableRequest,
 } from './types'
 
 // 统一走同源相对路径：开发经 Vite proxy，生产由 Go 同源提供静态资源。
@@ -121,4 +125,50 @@ export const api = {
       `/api/v1/games/${encodeURIComponent(id)}/hands/${handNo}`,
       { signal },
     ),
+
+  // ---- 牌桌配置模板 ----
+  // 列表有界分页：cursor 为空表示首页；响应 next_cursor 为 null 表示没有更多。
+  tables: (params?: { limit?: number; cursor?: string }, signal?: AbortSignal) => {
+    const query = new URLSearchParams()
+    if (params?.limit != null) query.set('limit', String(params.limit))
+    if (params?.cursor) query.set('cursor', params.cursor)
+    const suffix = query.toString()
+    return request<TableListDTO>(`/api/v1/tables${suffix ? `?${suffix}` : ''}`, { signal })
+  },
+  table: (id: string, signal?: AbortSignal) =>
+    request<TableDTO>(`/api/v1/tables/${encodeURIComponent(id)}`, { signal }),
+  createTable: (body: CreateTableRequest, signal?: AbortSignal) =>
+    request<TableDTO>('/api/v1/tables', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    }),
+  updateTable: (id: string, body: UpdateTableRequest, signal?: AbortSignal) =>
+    request<TableDTO>(`/api/v1/tables/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+      signal,
+    }),
+  // 清空 = config 置 null 的未配置空态，revision 递增。
+  clearTable: (id: string, expectedRevision: number, signal?: AbortSignal) =>
+    request<TableDTO>(`/api/v1/tables/${encodeURIComponent(id)}/clear`, {
+      method: 'POST',
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+      signal,
+    }),
+  // DELETE 返回 204 空响应体。
+  deleteTable: (id: string, expectedRevision: number, signal?: AbortSignal) =>
+    request<null>(`/api/v1/tables/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+      signal,
+    }),
+  // 从模板开局：仅在 loopback + 单活约束下创建；真人模板会种下新的 HttpOnly Cookie。
+  // 不接收座位/盲注覆盖字段，服务端使用模板当前版本的快照。
+  openGameFromTable: (id: string, expectedRevision: number, signal?: AbortSignal) =>
+    request<GameDTO>(`/api/v1/tables/${encodeURIComponent(id)}/games`, {
+      method: 'POST',
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+      signal,
+    }),
 }

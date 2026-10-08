@@ -34,7 +34,9 @@ async function create(page: Page, hands = 1) {
   const rows = page.locator('.seat-row')
   await expect(rows).toHaveCount(2)
   await expect(rows.nth(0).locator('.f-model select')).toHaveCount(0)
-  await expect(rows.nth(1).locator('.f-model select')).toHaveCount(1)
+  // mock 模式：AI 模型字段固定为「Mock（免费）」，无下拉、不可编辑。
+  await expect(rows.nth(1).locator('.f-model select')).toHaveCount(0)
+  await expect(rows.nth(1).locator('.f-model')).toContainText('Mock（免费）')
   await field(page, '小盲').locator('input').fill('5')
   await field(page, '大盲').locator('input').fill('10')
   await field(page, '最多手数').locator('input').fill(String(hands))

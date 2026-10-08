@@ -263,7 +263,16 @@ func (e *Engine) validate(c *CreateGame) error {
 			if s.ModelRef == "" {
 				return ErrInvalid
 			}
-			if c.Mode == "live" {
+			// user 预留：AI 座位不得关联用户，真人座位才允许。
+			if s.UserID != nil {
+				return ErrInvalid
+			}
+			if c.Mode == "mock" {
+				// mock 模式统一规范化为保留引用，绝不保存「展示真实模型却执行 mock」的配置。
+				s.ModelRef = "mock"
+			} else if s.ModelRef != "mock" {
+				// live：保留引用 "mock" 直接接受（不依赖 factory）；其他引用必须在模型目录中、
+				// 非 mock provider、非 unsupported，且可构造（Create 时经 factory 复核）。
 				m, ok := models[s.ModelRef]
 				if !ok || m.Provider == "mock" || m.Availability == "unsupported" {
 					return ErrInvalid
@@ -334,6 +343,14 @@ func (e *Engine) Create(ctx context.Context, c CreateGame) (GameView, error) {
 			if s.Kind == SeatHuman {
 				continue
 			}
+			// mock 引用直接构造 MockDecider，不经过 factory；真实引用才走 factory。
+			if s.ModelRef == "mock" {
+				ds[s.Seat] = agent.NewMockDecider()
+				continue
+			}
+			if e.factory == nil {
+				return GameView{}, ErrInvalid
+			}
 			d, err := e.factory.NewDecider(s.ModelRef)
 			if err != nil {
 				return GameView{}, ErrInvalid
@@ -342,10 +359,16 @@ func (e *Engine) Create(ctx context.Context, c CreateGame) (GameView, error) {
 		}
 		e.deciders[id] = ds
 	}
-	// 会话摘要规范化到私有 Record，并从创建输入中清除，避免 Config 重复保存。
+	// 会话摘要与来源信息规范化到私有 Record，并从创建输入中清除，避免 Config 重复保存。
 	session := c.PlayerSessionHash
+	owner := c.OwnerUserID
+	templateID := c.TemplateID
+	templateRevision := c.TemplateRevision
 	c.PlayerSessionHash = nil
-	rec := Record{Config: c, View: v, HumanActionTimeout: e.opts.HumanActionTimeout}
+	c.OwnerUserID = nil
+	c.TemplateID = nil
+	c.TemplateRevision = nil
+	rec := Record{Config: c, View: v, HumanActionTimeout: e.opts.HumanActionTimeout, OwnerUserID: owner, TemplateID: templateID, TemplateRevision: templateRevision}
 	if session != nil {
 		h := *session
 		rec.HumanSessionHash = &h

@@ -2689,3 +2689,122 @@ select {
     animation: none !important;
   }
 }
+
+/* ============================================================
+   牌桌模板（阶段 3）：顶部导航 + 列表卡片 + 空态/确认条
+   ============================================================ */
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.topnav .btn[aria-current='true'] {
+  border-color: var(--gold-dim);
+  color: var(--gold-soft);
+  background: rgba(201, 164, 76, 0.1);
+}
+
+.table-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+.table-card {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: rise 0.35s both;
+}
+.table-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+}
+.table-card-name {
+  font-family: var(--font-display);
+  font-size: 17px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip-badge.unconfigured {
+  color: var(--warn);
+  border-color: rgba(224, 176, 85, 0.45);
+}
+.table-card-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 10px 14px;
+  margin: 0;
+}
+.table-card-meta > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.table-card-meta dt {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.table-card-meta dd {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--ink-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.table-card-empty {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+.table-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.confirm-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--warn-bg);
+  border: 1px solid rgba(224, 176, 85, 0.42);
+  animation: rise 0.2s both;
+}
+.confirm-bar.danger {
+  background: var(--danger-bg);
+  border-color: rgba(224, 106, 92, 0.42);
+}
+.confirm-bar .confirm-text {
+  flex: 1 1 220px;
+  font-size: 12.5px;
+  color: var(--ink-dim);
+}
+
+.empty-config {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  border: 1px dashed var(--panel-line);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.18);
+}
+.empty-config-text {
+  flex: 1 1 240px;
+  font-size: 13px;
+  color: var(--muted);
+}

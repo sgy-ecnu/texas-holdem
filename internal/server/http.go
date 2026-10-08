@@ -135,6 +135,11 @@ func requestPlayerSession(r *http.Request) (service.PlayerSessionHash, bool) {
 }
 
 func New(m service.Manager, assets fs.FS, opts ...Options) *khttp.Server {
+	return NewWithTables(m, nil, assets, opts...)
+}
+
+// NewWithTables 在支持游戏管理的同时注入模板服务；tables 为 nil 时不注册模板路由。
+func NewWithTables(m service.Manager, tables *service.TableService, assets fs.FS, opts ...Options) *khttp.Server {
 	o := optionsFrom(opts)
 	s := khttp.NewServer(khttp.Address(o.address()), khttp.Timeout(o.Timeout))
 	// 同步到嵌入的 http.Server.Addr，便于断言监听地址；Kratos 实际用 Options 地址绑定。
@@ -144,10 +149,15 @@ func New(m service.Manager, assets fs.FS, opts ...Options) *khttp.Server {
 	s.Server.WriteTimeout = o.Timeout
 	s.Server.IdleTimeout = 30 * time.Second
 	s.Server.MaxHeaderBytes = maxHeaders
-	s.HandlePrefix("/", Handler(m, assets, opts...))
+	s.HandlePrefix("/", HandlerWithTables(m, tables, assets, opts...))
 	return s
 }
 func Handler(m service.Manager, assets fs.FS, opts ...Options) http.Handler {
+	return HandlerWithTables(m, nil, assets, opts...)
+}
+
+// HandlerWithTables 构建完整路由；tables 为 nil 时模板端点不注册（回落 404）。
+func HandlerWithTables(m service.Manager, tables *service.TableService, assets fs.FS, opts ...Options) http.Handler {
 	o := optionsFrom(opts)
 	allowed := allowedHosts(o)
 	mux := http.NewServeMux()
@@ -310,6 +320,9 @@ func Handler(m service.Manager, assets fs.FS, opts ...Options) http.Handler {
 		}
 		write(w, 200, Completed(v))
 	})
+	if tables != nil {
+		registerTableRoutes(mux, m, tables, o)
+	}
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { fail(w, service.ErrNotFound) })
 	mux.Handle("/", static(assets))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -350,6 +363,174 @@ func Handler(m service.Manager, assets fs.FS, opts ...Options) http.Handler {
 }
 func forbiddenOrigin(w http.ResponseWriter) {
 	write(w, 403, ErrorDTO{Error: ErrorDetail{Code: "INVALID_ORIGIN", Message: "请求来源不允许"}})
+}
+
+// registerTableRoutes 注册牌桌模板端点。owner 目前恒为 nil：预留字段只允许从未来
+// 可信认证上下文注入，绝不接受请求体自带的 user 字段。
+func registerTableRoutes(mux *http.ServeMux, m service.Manager, tables *service.TableService, o Options) {
+	mux.HandleFunc("POST /api/v1/tables", func(w http.ResponseWriter, r *http.Request) {
+		var d CreateTableDTO
+		if err := decode(w, r, &d); err != nil || d.Name == nil {
+			fail(w, service.ErrInvalid)
+			return
+		}
+		config, err := tableConfigFromRaw(d.Config)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		v, err := tables.Create(r.Context(), *d.Name, config, nil)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		write(w, 201, Table(v))
+	})
+	mux.HandleFunc("GET /api/v1/tables", func(w http.ResponseWriter, r *http.Request) {
+		limit, err := tableLimit(r.URL.Query().Get("limit"))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		items, next, err := tables.List(r.Context(), r.URL.Query().Get("cursor"), limit)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		write(w, 200, Tables(items, next))
+	})
+	mux.HandleFunc("GET /api/v1/tables/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !validID(r.PathValue("id")) {
+			fail(w, service.ErrInvalid)
+			return
+		}
+		v, err := tables.Get(r.Context(), r.PathValue("id"))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		write(w, 200, Table(v))
+	})
+	mux.HandleFunc("PUT /api/v1/tables/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !validID(r.PathValue("id")) {
+			fail(w, service.ErrInvalid)
+			return
+		}
+		var d UpdateTableDTO
+		if err := decode(w, r, &d); err != nil || d.ExpectedRevision == nil || d.Name == nil {
+			fail(w, service.ErrInvalid)
+			return
+		}
+		config, err := tableConfigFromRaw(d.Config)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		v, err := tables.Update(r.Context(), r.PathValue("id"), *d.ExpectedRevision, *d.Name, config)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		write(w, 200, Table(v))
+	})
+	mux.HandleFunc("POST /api/v1/tables/{id}/clear", func(w http.ResponseWriter, r *http.Request) {
+		if !validID(r.PathValue("id")) {
+			fail(w, service.ErrInvalid)
+			return
+		}
+		var d ExpectedRevisionDTO
+		if err := decode(w, r, &d); err != nil || d.ExpectedRevision == nil {
+			fail(w, service.ErrInvalid)
+			return
+		}
+		v, err := tables.Clear(r.Context(), r.PathValue("id"), *d.ExpectedRevision)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		write(w, 200, Table(v))
+	})
+	mux.HandleFunc("DELETE /api/v1/tables/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !validID(r.PathValue("id")) {
+			fail(w, service.ErrInvalid)
+			return
+		}
+		var d ExpectedRevisionDTO
+		if err := decode(w, r, &d); err != nil || d.ExpectedRevision == nil {
+			fail(w, service.ErrInvalid)
+			return
+		}
+		if err := tables.Delete(r.Context(), r.PathValue("id"), *d.ExpectedRevision); err != nil {
+			fail(w, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+	mux.HandleFunc("POST /api/v1/tables/{id}/games", func(w http.ResponseWriter, r *http.Request) {
+		if !validID(r.PathValue("id")) {
+			fail(w, service.ErrInvalid)
+			return
+		}
+		var d ExpectedRevisionDTO
+		if err := decode(w, r, &d); err != nil || d.ExpectedRevision == nil {
+			fail(w, service.ErrInvalid)
+			return
+		}
+		t, err := tables.Get(r.Context(), r.PathValue("id"))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		if t.Revision != *d.ExpectedRevision {
+			fail(w, service.ErrConflict)
+			return
+		}
+		if t.Config == nil {
+			fail(w, service.ErrInvalid)
+			return
+		}
+		c := t.Config.GameInput()
+		cred := ""
+		if hasHumanSeat(c) {
+			if !o.loopback() {
+				fail(w, service.ErrHumanLocalOnly)
+				return
+			}
+			var hash service.PlayerSessionHash
+			var ok bool
+			cred, hash, ok = newPlayerSession()
+			if !ok {
+				fail(w, service.ErrStorage)
+				return
+			}
+			c.PlayerSessionHash = &hash
+		}
+		// 记录来源快照：worker 之后只读牌局 Config，不再读模板；删除模板不影响历史局。
+		templateID := t.ID
+		templateRevision := t.Revision
+		c.TemplateID = &templateID
+		c.TemplateRevision = &templateRevision
+		v, err := m.Create(r.Context(), c)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		if cred != "" {
+			setPlayerCookie(w, v.ID, cred)
+		}
+		write(w, 201, Game(v))
+	})
+}
+
+func tableLimit(raw string) (int, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 || n > 100 {
+		return 0, service.ErrInvalid
+	}
+	return n, nil
 }
 func validID(id string) bool {
 	if len(id) != 36 {

@@ -91,7 +91,8 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("WEB_ASSETS_UNAVAILABLE")
 	}
-	app := kratos.New(kratos.Name("texas-holdem"), kratos.Server(server.New(manager, assets, server.Options{Host: c.HTTPHost, Port: c.HTTPPort, Timeout: c.HTTPTimeout})))
+	tables := service.NewTableService(repo)
+	app := kratos.New(kratos.Name("texas-holdem"), kratos.Server(server.NewWithTables(manager, tables, assets, server.Options{Host: c.HTTPHost, Port: c.HTTPPort, Timeout: c.HTTPTimeout})))
 	if err = app.Run(); err != nil {
 		return fmt.Errorf("SERVER_LIFECYCLE_FAILED")
 	}

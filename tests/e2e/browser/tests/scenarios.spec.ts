@@ -17,18 +17,6 @@ const fieldByLabel = (page: Page, text: string) =>
   page.locator('.form-grid .field').filter({ hasText: text })
 const seatRows = (page: Page) => page.locator('.seat-row')
 
-async function pickModels(page: Page, seats: number) {
-  const res = await page.request.get('/api/v1/models')
-  const { models } = (await res.json()) as { models: { ref: string }[] }
-  const refs = models.map((m) => m.ref)
-  expect(refs.length).toBeGreaterThanOrEqual(2)
-  const rows = seatRows(page)
-  for (let i = 0; i < seats; i++) {
-    await rows.nth(i).locator('.f-model select').selectOption(refs[i % refs.length])
-  }
-  return refs
-}
-
 async function configureAndCreate(
   page: Page,
   opts: { seats?: number; sb?: string; bb?: string; maxHands: string; stacks?: string },
@@ -85,19 +73,21 @@ test('scenario 1 · 配置 2/9 人且每座选择不同模型', async ({ page })
   await expect(fieldByLabel(page, '大盲').locator('input')).toHaveValue('100')
   await expect(fieldByLabel(page, '最多手数').locator('input')).toHaveValue('100')
 
+  // mock 模式：AI 模型字段固定为「Mock（免费）」，无下拉、不可编辑，提交 model_ref="mock"。
+  await expect(seatRows(page).nth(0).locator('.f-model select')).toHaveCount(0)
+  await expect(seatRows(page).nth(0).locator('.f-model')).toContainText('Mock（免费）')
+
   // 扩到 9 人
   const count = fieldByLabel(page, '座位数').locator('select')
   await count.selectOption('9')
   await expect(seatRows(page)).toHaveCount(9)
   await expect(seatRows(page).nth(8).locator('.f-name input')).toHaveValue('AI-9')
 
-  // 每座选不同模型
-  const refs = await pickModels(page, 9)
-  const values: string[] = []
+  // 每座模型字段都固定显示 Mock（免费），不存在可选下拉。
   for (let i = 0; i < 9; i++) {
-    values.push(await seatRows(page).nth(i).locator('.f-model select').inputValue())
+    await expect(seatRows(page).nth(i).locator('.f-model select')).toHaveCount(0)
+    await expect(seatRows(page).nth(i).locator('.f-model')).toContainText('Mock（免费）')
   }
-  expect(new Set(values).size).toBe(Math.min(9, refs.length))
   await shot(page, 's1-config-9seats.png')
 
   // 收回 2 人
@@ -175,10 +165,11 @@ test('scenario 4 · live 禁用与费用确认门槛', async ({ page, request })
   await expect(liveBtn).toBeDisabled()
   await expect(mockBtn).toHaveAttribute('aria-pressed', 'true')
   await expect(page.locator('.masthead .health')).toContainText('未授权')
-  await expect(page.locator('.inline-note')).toContainText('未授权付费模型')
+  await expect(page.locator('.inline-note').first()).toContainText('未允许真实模型')
   await shot(page, 's4-live-disabled.png')
 
-  // 费用确认 UI 分支：用拦截的 health 呈现 live 可用态（纯 UI，不创建牌局、不发生付费调用）。
+  // 费用确认 UI 分支：拦截 health + models 呈现 live 可用且目录含真实模型
+  // （纯 UI，不创建牌局、不发生付费调用）。
   await page.route('**/api/v1/health', (route) =>
     route.fulfill({
       status: 200,
@@ -192,6 +183,16 @@ test('scenario 4 · live 禁用与费用确认门槛', async ({ page, request })
       }),
     }),
   )
+  await page.route('**/api/v1/models', (route) =>
+    route.fulfill({
+      json: {
+        models: [
+          { ref: 'mock', label: 'Mock', provider: 'mock', availability: 'mock', error_code: null },
+          { ref: 'test/real', label: 'Real', provider: 'openai_compatible', availability: 'configured', error_code: null },
+        ],
+      },
+    }),
+  )
   let createPosts = 0
   page.on('request', (req) => {
     if (req.method() === 'POST' && /\/api\/v1\/games$/.test(new URL(req.url()).pathname)) createPosts++
@@ -199,6 +200,11 @@ test('scenario 4 · live 禁用与费用确认门槛', async ({ page, request })
   await page.reload()
   await expect(liveBtn).toBeEnabled()
   await liveBtn.click()
+  // 全 mock 的 live 配置不要求费用确认，明确提示不产生真实模型调用。
+  await expect(page.locator('.inline-note').first()).toContainText('不产生真实模型调用')
+  await expect(page.locator('.checkline')).toHaveCount(0)
+  // 选择一个真实模型座位后，出现费用确认门槛。
+  await seatRows(page).nth(1).locator('.f-model select').selectOption('test/real')
   await expect(page.locator('.checkline input[type="checkbox"]')).toBeVisible()
   await expect(page.locator('.checkline')).toContainText('确认')
   await page.getByRole('button', { name: '创建牌局' }).click()

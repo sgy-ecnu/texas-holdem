@@ -142,7 +142,12 @@ func (e *Engine) step() {
 		e.failWith(diagEngine, "engine", r.View.ID)
 		return
 	}
-	if r.Config.Mode == "live" && r.View.LiveCallsUsed >= r.Config.MaxLiveCalls {
+	// 统一判定：真实调用 = mode==live 且当前座位引用非保留值 "mock"。
+	// mock 引用即使处于 live 局也不消耗额度、不因额度耗尽暂停、不触发付费授权门槛。
+	realCall := isRealCall(r.Config, obs.Self)
+	// 只有真实模型请求受额度约束：额度耗尽时轮到 mock 或真人仍继续决策，
+	// 绝不把真实模型自动降级为 mock。check 真人分支已在上面优先后返回。
+	if realCall && r.View.LiveCallsUsed >= r.Config.MaxLiveCalls {
 		r.View.Status = "paused"
 		r.View.Reason = text("cost_limit")
 		r.View.Revision++
@@ -150,18 +155,20 @@ func (e *Engine) step() {
 		_ = e.save(e.ctx, r, old, nil, nil)
 		return
 	}
+	// 保留 live 模式运行授权复核：授权在运行中被关闭则暂停等待人工恢复，
+	// 绝不锁存为全局存储故障；与 Control 的 start/resume 授权复核一致。
+	if r.Config.Mode == "live" && !e.opts.AllowPaidModels {
+		e.reportDiag(diagAuth, "authorization", r.View.ID)
+		r.View.Status = "paused"
+		r.View.Reason = text("unauthorized")
+		r.View.Revision++
+		r.RequestID = ""
+		_ = e.save(e.ctx, r, old, nil, nil)
+		return
+	}
+	// 执行器：mock 引用直接 MockDecider；真实引用才走 factory，并在请求前预扣额度。
 	d := agent.NewMockDecider()
-	if r.Config.Mode == "live" {
-		if !e.opts.AllowPaidModels {
-			// 授权在运行中被关闭：记录安全码并暂停等待人工恢复，绝不锁存为全局存储故障。
-			e.reportDiag(diagAuth, "authorization", r.View.ID)
-			r.View.Status = "paused"
-			r.View.Reason = text("unauthorized")
-			r.View.Revision++
-			r.RequestID = ""
-			_ = e.save(e.ctx, r, old, nil, nil)
-			return
-		}
+	if realCall {
 		if e.factory == nil {
 			e.failWith(diagModel, "model", r.View.ID)
 			return
@@ -171,13 +178,7 @@ func (e *Engine) step() {
 		}
 		d = e.deciders[r.View.ID][obs.Self]
 		if d == nil {
-			ref := ""
-			for _, p := range r.Config.Seats {
-				if p.Seat == obs.Self {
-					ref = p.ModelRef
-				}
-			}
-			d, err = e.factory.NewDecider(ref)
+			d, err = e.factory.NewDecider(effectiveModelRef(r.Config, obs.Self))
 			if err != nil {
 				e.failWith(diagModel, "model", r.View.ID)
 				return
@@ -278,7 +279,7 @@ func (e *Engine) decide(ctx context.Context, d agent.Decider, obs poker.Observat
 	}
 	e.mu.Lock()
 	saved, isMock := e.commitDecision(&result, obs, gameID, revision, id)
-	// 只有落库的 mock 动作才进入步进停顿：live 用真实模型耗时，不额外加人工停顿。
+	// 只有落库的 mock 执行器动作才进入步进停顿：live 真实模型用真实耗时，不额外加人工停顿。
 	// 停顿不持锁，pause/stop 可立即取消。
 	var pauseCtx context.Context
 	if saved && isMock && e.opts.AITurnDelay > 0 {
@@ -298,8 +299,10 @@ func (e *Engine) decide(ctx context.Context, d agent.Decider, obs poker.Observat
 	e.notify()
 }
 
-// commitDecision 在锁内校验并原子落库当前 AI 决策；返回动作是否已提交，以及本局是否为
-// mock 模式（仅 mock 需要模拟步进停顿，live 用真实模型耗时）。
+// commitDecision 在锁内校验并原子落库当前 AI 决策；返回动作是否已提交，以及本次实际执行器
+// 是否为 mock（仅 mock 执行器需要模拟步进停顿，live 真实模型用真实耗时）。
+// ActionView.Source 也按实际执行器判定：mock 执行器（含 live 局中的 mock 引用）标 "mock"，
+// 仅真实模型请求标 "model"，真实请求失败回退标 "fallback" 且已消耗的额度保留。
 func (e *Engine) commitDecision(result *decisionResult, obs poker.Observation, gameID string, revision uint64, id string) (bool, bool) {
 	if e.ctx.Err() != nil || e.fault || e.activeRequest != id {
 		return false, false
@@ -319,8 +322,9 @@ func (e *Engine) commitDecision(result *decisionResult, obs poker.Observation, g
 		return false, false
 	}
 	action := result.decision.Action
+	// 执行器语义：仅真实模型请求标 "model"；mock 座位（含 live 局中的 mock 引用）标 "mock"。
 	source := "model"
-	if r.Config.Mode == "mock" {
+	if !isRealCall(r.Config, obs.Self) {
 		source = "mock"
 	}
 	var code *string
@@ -374,7 +378,7 @@ func (e *Engine) commitDecision(result *decisionResult, obs poker.Observation, g
 		hand = &h
 	}
 	saved := e.save(e.ctx, r, revision, &a, hand) == nil
-	return saved, saved && r.Config.Mode == "mock"
+	return saved, saved && !isRealCall(r.Config, obs.Self)
 }
 
 // thinkPause 在 AI 动作提交之后、推进下一个 actor 之前插入可取消的「思考停顿」，

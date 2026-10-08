@@ -40,3 +40,6 @@ secrets/
 
 # opencode 配置
 .opencode/
+
+# Playwright 测试运行产物
+*-artifacts/

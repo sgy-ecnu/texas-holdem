@@ -4,13 +4,16 @@ package data
 import (
 	"context"
 	"database/sql"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/go-sql-driver/mysql"
 	"github.com/redis/go-redis/v9"
+	"io/fs"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"texas-holdem/internal/conf"
@@ -18,8 +21,44 @@ import (
 	"time"
 )
 
-//go:embed migrations/001_init.sql
-var migration string
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
+// currentSchemaVersion 是本程序期望的数据库 schema 版本；启动校验必须精确匹配。
+const currentSchemaVersion = 2
+
+// migrationFile 是按文件名前缀版本号排序的单条迁移。
+type migrationFile struct {
+	version int
+	name    string
+	sql     string
+}
+
+// loadMigrations 解析 embed 的 migrations/NNN_name.sql，按版本号升序返回。
+func loadMigrations() ([]migrationFile, error) {
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return nil, err
+	}
+	var out []migrationFile
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		prefix := strings.SplitN(e.Name(), "_", 2)[0]
+		version, err := strconv.Atoi(prefix)
+		if err != nil {
+			return nil, errors.New("MIGRATION_NAME_INVALID")
+		}
+		b, err := fs.ReadFile(migrationsFS, "migrations/"+e.Name())
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, migrationFile{version: version, name: e.Name(), sql: string(b)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
+	return out, nil
+}
 
 type mysqlLog struct{}
 
@@ -61,6 +100,7 @@ func openMySQL(dsn string) (*sql.DB, error) {
 		return nil, service.ErrStorage
 	}
 	cfg.MultiStatements = false
+	cfg.ParseTime = true
 	cfg.Timeout = 5 * time.Second
 	cfg.ReadTimeout = 5 * time.Second
 	cfg.WriteTimeout = 5 * time.Second
@@ -114,10 +154,15 @@ func Open(ctx context.Context, c conf.Config, encode func(service.GameView) ([]b
 
 func validateSchema(ctx context.Context, db *sql.DB) error {
 	var version int
-	if err := db.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_version").Scan(&version); err != nil || version != 1 {
+	if err := db.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_version").Scan(&version); err != nil || version != currentSchemaVersion {
 		return service.ErrStorage
 	}
-	for _, q := range []string{"SELECT id,revision,status,active_slot,record FROM games LIMIT 0", "SELECT game_id,sequence,hand_no,record FROM actions LIMIT 0", "SELECT game_id,hand_no,record FROM hands LIMIT 0"} {
+	for _, q := range []string{
+		"SELECT id,revision,status,active_slot,record,owner_user_id,template_id,template_revision FROM games LIMIT 0",
+		"SELECT game_id,sequence,hand_no,record FROM actions LIMIT 0",
+		"SELECT game_id,hand_no,record FROM hands LIMIT 0",
+		"SELECT id,owner_user_id,name,revision,config,created_at,updated_at FROM table_templates LIMIT 0",
+	} {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
 			return service.ErrStorage
@@ -127,17 +172,23 @@ func validateSchema(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	var tables int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('games','hands','actions','schema_version') AND ENGINE='InnoDB'").Scan(&tables); err != nil || tables != 4 {
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('games','hands','actions','schema_version','table_templates') AND ENGINE='InnoDB'").Scan(&tables); err != nil || tables != 5 {
 		return service.ErrStorage
 	}
 	var indexes int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='games' AND INDEX_NAME='one_active_game' AND NON_UNIQUE=0 AND COLUMN_NAME='active_slot'").Scan(&indexes); err != nil || indexes != 1 {
 		return service.ErrStorage
 	}
+	var templateIndexes int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='table_templates' AND INDEX_NAME='templates_updated'").Scan(&templateIndexes); err != nil || templateIndexes != 2 {
+		return service.ErrStorage
+	}
 	return nil
 }
 
 // Migrate 必须由显式命令调用；DDL 不能承诺 MySQL 事务回滚，失败后可安全重跑。
+// 按版本顺序执行未应用迁移：先确保 schema_version 存在，再逐条应用 version>当前 的
+// 迁移；每个迁移文件自身完成后再记录版本。迁移语句必须幂等，以支持部分失败后重跑。
 func Migrate(ctx context.Context, c conf.Config) error {
 	db, err := openMySQL(c.MySQLDSN)
 	if err != nil {
@@ -164,15 +215,59 @@ func Migrate(ctx context.Context, c conf.Config) error {
 			fmt.Fprintln(os.Stderr, "INSTANCE_LOCK_RELEASE_FAILED")
 		}
 	}()
-	for _, stmt := range strings.Split(migration, ";") {
-		if strings.TrimSpace(stmt) == "" {
+	return runMigrations(ctx, conn)
+}
+
+// runMigrations 应用所有尚未记录的迁移版本。schema_version 先建表，兼容全新库。
+func runMigrations(ctx context.Context, conn *sql.Conn) error {
+	migrations, err := loadMigrations()
+	if err != nil {
+		return errors.New("MIGRATION_FAILED")
+	}
+	if _, err = conn.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL PRIMARY KEY) ENGINE=InnoDB"); err != nil {
+		return errors.New("MIGRATION_FAILED")
+	}
+	var current int
+	if err = conn.QueryRowContext(ctx, "SELECT COALESCE(MAX(version),0) FROM schema_version").Scan(&current); err != nil {
+		return errors.New("MIGRATION_FAILED")
+	}
+	for _, m := range migrations {
+		if m.version <= current {
 			continue
 		}
-		if _, err = conn.ExecContext(ctx, stmt); err != nil {
+		if err = execStatements(ctx, conn, m.sql); err != nil {
+			return errors.New("MIGRATION_FAILED")
+		}
+		// 迁移文件通常自带 INSERT IGNORE schema_version；此处再确保版本被记录。
+		if _, err = conn.ExecContext(ctx, "INSERT IGNORE INTO schema_version (version) VALUES (?)", m.version); err != nil {
 			return errors.New("MIGRATION_FAILED")
 		}
 	}
 	return nil
+}
+
+func execStatements(ctx context.Context, conn *sql.Conn, content string) error {
+	for _, stmt := range strings.Split(stripLineComments(content), ";") {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// stripLineComments 移除 SQL 行注释（"--" 起至行尾），避免注释中的分号破坏语句切分。
+// 本项目迁移语句不含带 "--" 的字符串字面量。
+func stripLineComments(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if idx := strings.Index(line, "--"); idx >= 0 {
+			lines[i] = line[:idx]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (r *Repository) Close() error {
@@ -229,6 +324,20 @@ func active(status string) any {
 	}
 	return 1
 }
+
+// nullString/nullUint64 把可选预留字段写入可空列：nil 映射为 SQL NULL。
+func nullString(v *string) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+func nullUint64(v *uint64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
 func dbError(err error) error {
 	var me *mysql.MySQLError
 	if errors.As(err, &me) && me.Number == 1062 {
@@ -256,7 +365,7 @@ func (r *Repository) Create(ctx context.Context, record service.Record) error {
 	if err != nil {
 		return service.ErrStorage
 	}
-	_, err = r.db.ExecContext(ctx, "INSERT INTO games (id,revision,status,active_slot,record) VALUES (?,?,?,?,?)", record.View.ID, record.View.Revision, record.View.Status, active(record.View.Status), b)
+	_, err = r.db.ExecContext(ctx, "INSERT INTO games (id,revision,status,active_slot,record,owner_user_id,template_id,template_revision) VALUES (?,?,?,?,?,?,?,?)", record.View.ID, record.View.Revision, record.View.Status, active(record.View.Status), b, nullString(record.OwnerUserID), nullString(record.TemplateID), nullUint64(record.TemplateRevision))
 	if err != nil {
 		return dbError(err)
 	}

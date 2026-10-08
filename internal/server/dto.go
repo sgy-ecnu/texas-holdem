@@ -364,3 +364,203 @@ func (d HumanActionDTO) HumanInput() (service.HumanAction, error) {
 	}
 	return ha, nil
 }
+
+// ---- 牌桌模板 DTO ----
+// 公共模板 DTO 绝不包含 owner_user_id 或任何会话信息；user 字段不进入响应。
+
+// TableSeatDTO 是模板座位公共视图。
+type TableSeatDTO struct {
+	Seat     poker.Seat       `json:"seat"`
+	Name     string           `json:"name"`
+	ModelRef string           `json:"model_ref"`
+	Stack    poker.Chips      `json:"stack"`
+	Kind     service.SeatKind `json:"kind"`
+}
+type TableConfigDTO struct {
+	Seats        []TableSeatDTO `json:"seats"`
+	Button       poker.Seat     `json:"button"`
+	SmallBlind   poker.Chips    `json:"small_blind"`
+	BigBlind     poker.Chips    `json:"big_blind"`
+	MaxHands     uint32         `json:"max_hands"`
+	Mode         service.Mode   `json:"mode"`
+	MaxLiveCalls uint32         `json:"max_live_calls"`
+}
+type TableDTO struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Revision  uint64          `json:"revision"`
+	Config    *TableConfigDTO `json:"config"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+// TableSummaryDTO 是列表摘要：不含完整 seats，不暴露 owner/会话。
+type TableSummaryDTO struct {
+	ID         string      `json:"id"`
+	Name       string      `json:"name"`
+	Revision   uint64      `json:"revision"`
+	Configured bool        `json:"configured"`
+	SeatCount  int         `json:"seat_count"`
+	SmallBlind poker.Chips `json:"small_blind"`
+	BigBlind   poker.Chips `json:"big_blind"`
+	HumanSeat  *poker.Seat `json:"human_seat"`
+	CreatedAt  time.Time   `json:"created_at"`
+	UpdatedAt  time.Time   `json:"updated_at"`
+}
+type TableListDTO struct {
+	Tables     []TableSummaryDTO `json:"tables"`
+	NextCursor *string           `json:"next_cursor"`
+}
+
+// 请求 DTO：指针区分缺字段与零值，RawMessage 区分省略与显式 null。
+type TableSeatInputDTO struct {
+	Seat     *poker.Seat     `json:"seat"`
+	Name     *string         `json:"name"`
+	Stack    *poker.Chips    `json:"stack"`
+	ModelRef json.RawMessage `json:"model_ref"`
+	Kind     json.RawMessage `json:"kind"`
+}
+type TableConfigInputDTO struct {
+	Seats        []TableSeatInputDTO `json:"seats"`
+	Button       *poker.Seat         `json:"button"`
+	SmallBlind   *poker.Chips        `json:"small_blind"`
+	BigBlind     *poker.Chips        `json:"big_blind"`
+	MaxHands     *uint32             `json:"max_hands"`
+	Mode         *service.Mode       `json:"mode"`
+	MaxLiveCalls *uint32             `json:"max_live_calls"`
+}
+type CreateTableDTO struct {
+	Name   *string         `json:"name"`
+	Config json.RawMessage `json:"config"`
+}
+type UpdateTableDTO struct {
+	ExpectedRevision *uint64         `json:"expected_revision"`
+	Name             *string         `json:"name"`
+	Config           json.RawMessage `json:"config"`
+}
+type ExpectedRevisionDTO struct {
+	ExpectedRevision *uint64 `json:"expected_revision"`
+}
+
+// Table 转换公共模板视图：Config=null 时输出 null，表示未配置空态。
+func Table(v service.Table) TableDTO {
+	d := TableDTO{ID: v.ID, Name: v.Name, Revision: v.Revision, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt}
+	if v.Config != nil {
+		c := tableConfig(*v.Config)
+		d.Config = &c
+	}
+	return d
+}
+
+func Tables(items []service.Table, next string) TableListDTO {
+	d := TableListDTO{Tables: make([]TableSummaryDTO, 0, len(items))}
+	for _, t := range items {
+		s := TableSummaryDTO{ID: t.ID, Name: t.Name, Revision: t.Revision, Configured: t.Config != nil, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt}
+		if t.Config != nil {
+			s.SeatCount = len(t.Config.Seats)
+			s.SmallBlind = t.Config.SmallBlind
+			s.BigBlind = t.Config.BigBlind
+			s.HumanSeat = t.Config.HumanSeat()
+		}
+		d.Tables = append(d.Tables, s)
+	}
+	if next != "" {
+		d.NextCursor = &next
+	}
+	return d
+}
+
+func tableConfig(c service.TableConfig) TableConfigDTO {
+	d := TableConfigDTO{Button: c.Button, SmallBlind: c.SmallBlind, BigBlind: c.BigBlind, MaxHands: c.MaxHands, Mode: c.Mode, MaxLiveCalls: c.MaxLiveCalls, Seats: make([]TableSeatDTO, 0, len(c.Seats))}
+	for _, s := range c.Seats {
+		kind := s.Kind
+		if kind == "" {
+			kind = service.SeatAI
+		}
+		d.Seats = append(d.Seats, TableSeatDTO{Seat: s.Seat, Name: s.Name, ModelRef: s.ModelRef, Stack: s.Stack, Kind: kind})
+	}
+	return d
+}
+
+// tableConfigFromRaw 解析可空的 config 字段：缺省/null 表示空模板；否则严格解码。
+func tableConfigFromRaw(raw json.RawMessage) (*service.TableConfig, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	var in TableConfigInputDTO
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		return nil, service.ErrInvalid
+	}
+	c, err := in.Input()
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (d TableConfigInputDTO) Input() (service.TableConfig, error) {
+	if len(d.Seats) < 2 || len(d.Seats) > 9 || d.Button == nil || d.SmallBlind == nil || d.BigBlind == nil || d.MaxHands == nil || d.MaxLiveCalls == nil {
+		return service.TableConfig{}, service.ErrInvalid
+	}
+	c := service.TableConfig{Button: *d.Button, SmallBlind: *d.SmallBlind, BigBlind: *d.BigBlind, MaxHands: *d.MaxHands, MaxLiveCalls: *d.MaxLiveCalls, Mode: "mock"}
+	if d.Mode != nil {
+		c.Mode = *d.Mode
+		if c.Mode == "" {
+			return c, service.ErrInvalid
+		}
+	}
+	for _, s := range d.Seats {
+		sc, err := s.input()
+		if err != nil {
+			return service.TableConfig{}, err
+		}
+		c.Seats = append(c.Seats, sc)
+	}
+	return c, nil
+}
+
+// input 解析模板单座位；kind 省略按 ai，显式 null/未知拒绝；真人 model_ref 只允许省略或 ""。
+func (s TableSeatInputDTO) input() (service.TableSeat, error) {
+	if s.Seat == nil || s.Name == nil || s.Stack == nil {
+		return service.TableSeat{}, service.ErrInvalid
+	}
+	kind := service.SeatAI
+	if raw := bytes.TrimSpace(s.Kind); len(raw) > 0 {
+		if bytes.Equal(raw, []byte("null")) {
+			return service.TableSeat{}, service.ErrInvalid
+		}
+		var k service.SeatKind
+		if json.Unmarshal(raw, &k) != nil || (k != service.SeatAI && k != service.SeatHuman) {
+			return service.TableSeat{}, service.ErrInvalid
+		}
+		kind = k
+	}
+	sc := service.TableSeat{Seat: *s.Seat, Name: *s.Name, Stack: *s.Stack, Kind: kind}
+	raw := bytes.TrimSpace(s.ModelRef)
+	switch kind {
+	case service.SeatHuman:
+		if len(raw) == 0 {
+			break
+		}
+		if bytes.Equal(raw, []byte("null")) {
+			return service.TableSeat{}, service.ErrInvalid
+		}
+		var ref string
+		if json.Unmarshal(raw, &ref) != nil || ref != "" {
+			return service.TableSeat{}, service.ErrInvalid
+		}
+	case service.SeatAI:
+		if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+			return service.TableSeat{}, service.ErrInvalid
+		}
+		var ref string
+		if json.Unmarshal(raw, &ref) != nil || ref == "" {
+			return service.TableSeat{}, service.ErrInvalid
+		}
+		sc.ModelRef = ref
+	}
+	return sc, nil
+}

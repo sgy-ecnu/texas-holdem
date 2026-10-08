@@ -156,7 +156,7 @@ func TestSingleInstanceLockGuard(t *testing.T) {
 }
 func TestSchemaFailsClosed(t *testing.T) {
 	r, m := sqlRepo(t)
-	m.ExpectQuery("SELECT MAX").WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(2))
+	m.ExpectQuery("SELECT MAX").WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(3))
 	if err := validateSchema(context.Background(), r.db); !errors.Is(err, service.ErrStorage) {
 		t.Fatal("unknown schema accepted")
 	}
